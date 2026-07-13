@@ -1,0 +1,8 @@
+{
+    "architecture": "deepseek2",
+    "is_moe": true,
+    "total_layers": 27,
+    "total_experts": 64,
+    "experts_used_per_token": 6,
+    "context_length": 163840
+}
