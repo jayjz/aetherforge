@@ -1,9 +1,84 @@
+# ==============================================================================
+# AETHERFORGE SECURE .GITIGNORE
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. SENSITIVE DATA & SECRETS (NEVER COMMIT)
+# ------------------------------------------------------------------------------
+# These files often contain API keys, passwords, or private configuration data.
+.env
+.env.*
+*.env
+secrets.json
+config.json
+credentials.json
+auth.json
+*.pem
+*.key
+*.cert
+*.pfx
+*.p12
+id_rsa
+id_rsa.pub
+
+# ------------------------------------------------------------------------------
+# 2. MARKDOWN & DOCUMENTATION (WHITELIST APPROACH)
+# ------------------------------------------------------------------------------
+# Ignore all markdown files to prevent accidental leakage of sensitive notes.
+*.md
+*.markdown
+*.mdx
+
+# ...EXCEPT for these explicitly whitelisted public files.
+!README.md
+!PROJECTGUIDELINES.md
+!ROADMAP.md
+!CONTRIBUTING.md
+!CHANGELOG.md
+
+# ------------------------------------------------------------------------------
+# 3. PYTHON ENVIRONMENTS & CACHES
+# ------------------------------------------------------------------------------
+# Prevents massive directories and compiled bytecode from bloating the repo.
 __pycache__/
-*.pyc
-build/
-dist/
-*.so
-*.o
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env_aether/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ------------------------------------------------------------------------------
+# 4. LOGS & TELEMETRY
+# ------------------------------------------------------------------------------
+# Log files can inadvertently capture sensitive system states or prompt data.
+*.log
+logs/
+telemetry/
+.npm/_logs/
+
+# ------------------------------------------------------------------------------
+# 5. ML MODELS & LARGE BINARIES
+# ------------------------------------------------------------------------------
+# Prevents checking in 30GB GGUF models or database files.
+*.gguf
+*.bin
+*.pt
+*.safetensors
+models/
+checkpoints/
+*.sqlite3
+*.db
+
+# ------------------------------------------------------------------------------
+# 6. IDE & SYSTEM FILES
+# ------------------------------------------------------------------------------
+# Prevents local machine configurations from causing merge conflicts.
 .vscode/
 .idea/
-venv/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
