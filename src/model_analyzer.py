@@ -22,55 +22,89 @@ class GGUFAnalyzer:
         self.file_path = file_path
         self.reader = GGUFReader(self.file_path)
 
+    def _get_val(self, key: str):
+        """Safely extracts and decodes a value from the GGUF headers."""
+        field = self.reader.get_field(key)
+        if not field: 
+            return None
+        
+        try:
+            # The modern gguf package method
+            if hasattr(field, "contents"):
+                val = field.contents()
+                # Unpack single-item lists/arrays
+                if isinstance(val, (list, tuple)) and len(val) == 1:
+                    val = val[0]
+                # Convert numpy scalars to native python types
+                if hasattr(val, "item"):
+                    val = val.item()
+                if isinstance(val, (bytes, bytearray)):
+                    return val.decode("utf-8")
+                return val
+            
+            # The legacy gguf package fallback
+            part = field.parts[field.data[0]]
+            if hasattr(part, "item"):
+                return part.item()
+            if isinstance(part, (list, tuple)) and len(part) == 1:
+                part = part[0]
+            if isinstance(part, bytes):
+                return part.decode('utf-8')
+            return part
+        except Exception:
+            return None
+
+    def _find_key_ending_with(self, suffix: str):
+        """Searches all metadata keys if the standard architecture prefix fails."""
+        for k in self.reader.fields.keys():
+            if k.endswith(suffix):
+                return self._get_val(k)
+        return None
+
     def extract_topology(self) -> MoETopology:
-        """
-        Rips through the GGUF key-value headers to map the network structure
-        without loading the massive weight tensors into RAM.
-        """
-        fields = self.reader.fields
-        
-        # 1. Identify the architecture (e.g., 'mixtral', 'qwen2moe', 'llama')
-        arch_key = "general.architecture"
-        if arch_key not in fields:
+        """Rips through the GGUF key-value headers safely."""
+        # 1. Identify the architecture
+        arch_str = self._get_val("general.architecture")
+        if not arch_str:
             raise ValueError("Invalid GGUF: Missing general.architecture key.")
-        
-        arch = self.reader.get_field(arch_key).parts[self.reader.get_field(arch_key).data[0]]
-        arch_str = str(arch, encoding='utf-8') if isinstance(arch, bytes) else str(arch)
+        arch_str = str(arch_str)
 
         # 2. Extract block count (total layers)
-        layers_key = f"{arch_str}.block_count"
-        total_layers = int(self.reader.get_field(layers_key).parts[self.reader.get_field(layers_key).data[0]])
+        total_layers = self._get_val(f"{arch_str}.block_count")
+        if total_layers is None:
+            total_layers = self._find_key_ending_with(".block_count")
+        total_layers = int(total_layers) if total_layers else 0
 
         # 3. Check for MoE specific keys
-        expert_count_key = f"{arch_str}.expert_count"
-        expert_used_key = f"{arch_str}.expert_used_count"
-        ctx_length_key = f"{arch_str}.context_length"
-        
-        ctx_length = 0
-        if ctx_length_key in fields:
-            ctx_length = int(self.reader.get_field(ctx_length_key).parts[self.reader.get_field(ctx_length_key).data[0]])
+        expert_count = self._get_val(f"{arch_str}.expert_count")
+        if expert_count is None:
+            expert_count = self._find_key_ending_with(".expert_count")
 
-        is_moe = expert_count_key in fields
+        experts_used = self._get_val(f"{arch_str}.expert_used_count")
+        if experts_used is None:
+            experts_used = self._find_key_ending_with(".expert_used_count")
+            
+        ctx_length = self._get_val(f"{arch_str}.context_length")
+        if ctx_length is None:
+            ctx_length = self._find_key_ending_with(".context_length")
+
+        is_moe = expert_count is not None
         
         if is_moe:
-            total_experts = int(self.reader.get_field(expert_count_key).parts[self.reader.get_field(expert_count_key).data[0]])
-            experts_used = int(self.reader.get_field(expert_used_key).parts[self.reader.get_field(expert_used_key).data[0]])
-            
             return MoETopology(
                 architecture=arch_str,
                 is_moe=True,
                 total_layers=total_layers,
-                total_experts=total_experts,
-                experts_used_per_token=experts_used,
-                context_length=ctx_length
+                total_experts=int(expert_count),
+                experts_used_per_token=int(experts_used) if experts_used else 0,
+                context_length=int(ctx_length) if ctx_length else 0
             )
         else:
-            # Fallback for dense models (AetherForge MVP targets MoE, so we flag this)
             return MoETopology(
                 architecture=arch_str,
                 is_moe=False,
                 total_layers=total_layers,
-                context_length=ctx_length
+                context_length=int(ctx_length) if ctx_length else 0
             )
 
     def print_report(self, topology: MoETopology):
@@ -90,19 +124,15 @@ class GGUFAnalyzer:
 if __name__ == "__main__":
     print("Initializing AetherForge GGUF Introspection Layer...")
     
-    # Point this to a real GGUF file on your system if you have one downloaded.
-    # Otherwise, this script is ready to go once you fetch DeepSeek or Mixtral.
-    test_path = "../models/mixtral-8x7b-instruct-v0.1.Q4_K_M.gguf"
+    test_path = r"models\DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf"
     
     if os.path.exists(test_path):
         analyzer = GGUFAnalyzer(test_path)
         topo = analyzer.extract_topology()
         analyzer.print_report(topo)
         
-        # Save mapping for the Cache Simulator
         with open("moe_topology.json", "w") as f:
             json.dump(topo.to_dict(), f, indent=4)
         print("Topology map exported to moe_topology.json")
     else:
         print(f"[!] Target model not found at {test_path}.")
-        print("    Run this script again once you have downloaded a GGUF MoE model.")
