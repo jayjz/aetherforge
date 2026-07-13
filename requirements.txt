@@ -1,0 +1,19 @@
+# --- AetherForge Core Dependencies ---
+# Pinned to stable, compatible versions to prevent pipeline breakage
+
+# Model Introspection & Inference
+gguf>=0.10.0
+llama-cpp-python>=0.2.79
+scikit-build-core[pyproject]>=0.9.2
+
+# Hypervisor API & Nervous System
+fastapi>=0.111.0
+uvicorn>=0.30.0
+pydantic>=2.7.0
+
+# Mathematical Modeling & Simulation
+numpy>=1.26.0
+
+# Optional: For future token importance mapping & adapter work
+torch>=2.1.0
+transformers>=4.41.0
