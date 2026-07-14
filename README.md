@@ -10,6 +10,20 @@ Current tools (llama.cpp ncmoe static pinning, crude disk streaming in Colibri, 
 ### MVP Goal (Narrow & Shippable)
 Build a working prototype focused on **MoE expert management** that demonstrates measurable improvements in memory efficiency and/or speed on consumer hardware, with basic agent integration hooks.
 
+## 🧠 Core Architecture: Dynamic Layer Orchestration
+
+AetherForge does not compete with `llama.cpp` on static token generation speed. It acts as an **overseer**, intercepting the inference engine to dynamically manage memory based on agent intent.
+
+```mermaid
+graph TD;
+    A[Autonomous Agent] -->|POST /strategy| B(AetherForge API)
+    A -->|POST /generate| B
+    B -->|Topology JSON| C{The Brain - Cache Manager}
+    C -->|MemoryInstruction| D[Tensor Bridge]
+    D -->|ctypes Layer Swap| E[(llama.cpp / GGML Backend)]
+    E -->|VRAM| F[RTX 4060 GPU]
+    E -->|RAM| G[System Memory]
+    
 **Core Features (MVP Scope)**
 - Predictive prefetching for experts based on layer similarity (inspired by HOBBIT) + simple importance scoring (gating magnitude + heuristics).
 - Dynamic mixed-precision loading (high prec for important experts, lower for others).
