@@ -1,36 +1,89 @@
+"""
+AetherForge Hardware Engine (The Muscle)
+========================================
+Manages physical execution of LLM generation via llama.cpp.
+Supports dynamic 'Fast-Swap' VRAM allocation based on Agent strategy.
+"""
+
 import os
 import time
+import gc
+from typing import Dict, Any
 from llama_cpp import Llama
-from src.cache_manager import AetherCacheManager
 
 class AetherEngine:
+    # Pre-defined memory profiles for an 8GB VRAM budget (RTX 4060)
+    STRATEGY_MAP = {
+        "high_fidelity": 15,    # Maximizes VRAM for reasoning/coding
+        "balanced": 10,         # Standard operating mode
+        "aggressive_quant": 2   # Drops to System RAM for simple tasks, freeing VRAM
+    }
+
     def __init__(self, model_path: str, vram_budget_mb: float = 8000):
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model not found at {model_path}")
             
         self.model_path = model_path
-        self.cache_manager = AetherCacheManager(vram_budget_mb=vram_budget_mb, ram_budget_mb=32000)
+        self.vram_budget_mb = vram_budget_mb
+        self.current_strategy = "balanced"
+        self.llm = None
         
         print(f"[Engine] Booting AetherForge Inference Core...")
         print(f"[Engine] Target Model: {os.path.basename(model_path)}")
         
-        # Initialize llama.cpp
-        # n_gpu_layers=10 is a conservative start for 8GB VRAM with a 16B MoE model
+        # Initial boot
+        self._load_model(self.STRATEGY_MAP[self.current_strategy])
+        print("[Engine] CUDA Engine Online.")
+
+    def _load_model(self, n_gpu_layers: int):
+        """Safely allocates the model into hardware memory."""
         self.llm = Llama(
             model_path=self.model_path,
-            n_gpu_layers=10, 
+            n_gpu_layers=n_gpu_layers,
             n_ctx=2048,
             verbose=False
         )
-        print("[Engine] CUDA Engine Online.")
 
-    def generate(self, prompt: str, max_tokens: int = 100):
-        print(f"\n[Engine] Received Prompt: '{prompt}'")
-        print("[Engine] Commencing generation...\n")
+    def apply_strategy(self, mode: str) -> bool:
+        """
+        Executes the Fast-Swap protocol. 
+        Tears down the active context and reallocates VRAM boundaries.
+        """
+        if mode not in self.STRATEGY_MAP:
+            print(f"[Engine] Invalid strategy '{mode}'. Defaulting to balanced.")
+            mode = "balanced"
+            
+        if mode == self.current_strategy:
+            return True # No-op, already in correct state
+            
+        target_layers = self.STRATEGY_MAP[mode]
+        print(f"\n[Engine] HARDWARE OVERRIDE INITIATED.")
+        print(f" -> Shifting from '{self.current_strategy}' to '{mode}'.")
+        print(f" -> Reallocating VRAM for {target_layers} layers...")
         
         start_time = time.time()
         
-        # Standard generation call
+        # 1. Destroy the current pointer
+        del self.llm
+        
+        # 2. Force Python garbage collection to flush the GPU buffer
+        gc.collect()
+        
+        # 3. Re-instantiate with new VRAM boundaries
+        self._load_model(target_layers)
+        
+        swap_time = time.time() - start_time
+        self.current_strategy = mode
+        
+        print(f"[Engine] VRAM Reallocation Complete in {swap_time:.2f}s.")
+        return True
+
+    def generate(self, prompt: str, max_tokens: int = 100) -> Dict[str, Any]:
+        """Executes inference using the currently active memory profile."""
+        print(f"\n[Engine] Commencing generation (Mode: {self.current_strategy.upper()})...")
+        
+        start_time = time.time()
+        
         output = self.llm(
             prompt,
             max_tokens=max_tokens,
@@ -38,22 +91,43 @@ class AetherEngine:
             echo=False
         )
         
-        end_time = time.time()
-        generation_time = end_time - start_time
+        generation_time = time.time() - start_time
         tokens_generated = output['usage']['completion_tokens']
-        tps = tokens_generated / generation_time
+        tps = tokens_generated / generation_time if generation_time > 0 else 0
         
-        print(f"\nResult:\n{output['choices'][0]['text']}")
-        print(f"\n--- AetherForge Baseline Metrics ---")
-        print(f"Tokens generated: {tokens_generated}")
-        print(f"Time taken: {generation_time:.2f} seconds")
-        print(f"Speed: {tps:.2f} tokens/sec")
+        print(f" -> Time taken: {generation_time:.2f}s")
+        print(f" -> Speed: {tps:.2f} tokens/sec")
+        
+        return {
+            "text": output['choices'][0]['text'],
+            "metrics": {
+                "tokens_generated": tokens_generated,
+                "time_seconds": generation_time,
+                "tokens_per_second": tps,
+                "active_strategy": self.current_strategy
+            }
+        }
 
+
+# --- EXECUTION / TESTING ---
 if __name__ == "__main__":
-    # Point to the DeepSeek model we just downloaded
     target_model = r"models\DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf"
     
-    engine = AetherEngine(model_path=target_model, vram_budget_mb=8000)
-    
-    test_prompt = "Write a highly optimized Python function to calculate the Fibonacci sequence."
-    engine.generate(prompt=test_prompt, max_tokens=150)
+    if os.path.exists(target_model):
+        engine = AetherEngine(model_path=target_model)
+        
+        # 1. Generate in standard balanced mode
+        engine.generate("Write a one sentence summary of machine learning.", max_tokens=30)
+        
+        # 2. Simulate the Agent injecting a new strategy
+        engine.apply_strategy("aggressive_quant")
+        
+        # 3. Generate under the new low-VRAM constraints
+        engine.generate("What is 2+2?", max_tokens=10)
+        
+        # 4. Agent needs heavy coding power again
+        engine.apply_strategy("high_fidelity")
+        
+        engine.generate("Write a python function to fetch an API.", max_tokens=50)
+    else:
+        print("[!] Download a model first to test hardware execution.")
