@@ -106,7 +106,8 @@ async def update_strategy(payload: StrategyPayload):
 @app.post("/generate")
 async def generate_text(payload: GenerationPayload):
     """Executes inference while actively applying the injected strategy."""
-    
+    global current_strategy # <---FIX SCOPING ISSUE: Ensure the global variable is referenced correctly
+
     # Just-in-time strategy check if the agent passed it in the generation payload
     active_mode = payload.strategy.mode if payload.strategy else current_strategy
     
