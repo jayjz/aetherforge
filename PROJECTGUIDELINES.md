@@ -1,154 +1,90 @@
-# PROJECTGUIDELINES.md - AetherForge
+# PROJECTGUIDELINES.md — AetherForge
 
-**Extensive guidelines, research synthesis, architecture, and development standards for AetherForge.**
+**Living guidelines for architecture, decisions, and engineering standards.**  
+*Last updated: 2026-07-17*
 
-*Last updated: July 13, 2026*
+## 1. Vision & Current Reality
 
-## 1. Project Vision & Core Goals
-AetherForge is a predictive, intelligent memory hypervisor for local LLMs. It dynamically manages the memory hierarchy (VRAM on limited GPUs like RTX 4060 8GB, system RAM 32GB, and fast storage) for MoE models primarily, with future extension to dense models and KV/activation management.
+**Vision**: Agent-aware memory hypervisor that lets local agents treat large MoE models as elastic resources on consumer hardware (8–16 GB VRAM + system RAM).
 
-**Primary Goal (MVP)**: Build a practical prototype that improves effective model capacity and/or speed on consumer hardware through smarter expert loading/prefetching/caching compared to static baselines, while providing clean integration points for agent systems.
+**Current production path** (what ships on `main`):
+- Controlled Fast-Swap via `n_gpu_layers` change
+- KV-cache serialization (`save_state` / `load_state`) so context survives
+- Economic Gatekeeper that rejects swaps whose latency cost exceeds expected benefit
+- OpenAI-compatible tool schema generated from Pydantic
+- FastAPI control plane
 
-**Longer-term Vision**: Become foundational infrastructure that lets agent builders (like OpenClaw) treat large MoE models as first-class citizens on modest hardware by making memory decisions automatic, predictive, and workload-aware.
+True runtime expert-level tensor movement remains research until proven stable.
 
-**Success Metrics**:
-- Measurable improvement in VRAM efficiency or tokens/sec on target hardware vs. vanilla llama.cpp / basic offloading.
-- Quality impact <1-2% on standard benchmarks.
-- Usable hooks for agent frameworks.
-- Clear, reproducible documentation and benchmarks.
+**Primary success metrics (product-oriented)**:
+- A new user can install and run a strategy change with long context in < 15 minutes of setup.
+- Measurable reduction in prefill penalty for multi-step agent workloads vs static baselines.
+- Tool schema works with at least two major agent frameworks without custom glue.
+- No silent context loss or segfaults under normal use.
 
-## 2. Research Synthesis & Key References
+## 2. Architecture Principles
 
-### HOBBIT Paper (Primary Inspiration)
-**Title**: HOBBIT: A Mixed Precision Expert Offloading System for Fast MoE Inference (arXiv:2411.01433)
+1. **Reliability over cleverness** — Prefer a well-tested teardown + KV path over fragile ctypes experiments.
+2. **Control plane vs muscle** — Keep decision logic (Python) separate from execution (llama.cpp / future backends).
+3. **Agent-first** — Every capability should be discoverable and callable by an autonomous agent.
+4. **Config over code** — Hard-coded paths, layer counts, and thresholds are technical debt.
+5. **Honest observability** — Expose real measured costs, not just static tables.
 
-**Core Ideas to Adopt/Adapt**:
-- **Importance Scoring**: Use gating input magnitude ||G(x)_e_i|| as proxy for expert importance (highly correlated with actual contribution). Compute unimportance score cumulatively. Thresholds (e.g., T1=0.6, T2=0.9) to decide high-prec / low-prec / skip.
-- **Mixed Precision**: Load less important experts in int4/int2 instead of float16 to reduce I/O latency (up to 4x faster loading) with minimal accuracy loss if limited percentage.
-- **Layer-level Adaptive Prefetching**: Exploit high cosine similarity of gating inputs between consecutive layers (~0.9+). Predict next-layer experts with high accuracy (~96% top-1 for next layer). Use stacking for efficient multi-layer prediction. Mitigate wrong predictions with low-precision loads.
-- **Multidimensional Caching**: Combine LRU, LFU, LHU (high-prec frequently used), FLD (farthest layer distance). Weighted priority to minimize mixed miss penalties.
-- **Implementation**: Built on llama.cpp (~8k LOC C++/C additions). GPU-centric and CPU-GPU modes.
+## 3. Branching & Release Workflow
 
-**Results (Reference)**: Significant speedups (up to ~10x decoding on edge devices) with <1% accuracy drop on Mixtral-8x7B and Phi-MoE.
+- `main` is always runnable.
+- Work on short-lived branches: `feat/`, `fix/`, `chore/`, `docs/`, `research/`.
+- Open a PR even when solo (self-review + permanent rationale).
+- Delete branches after merge.
+- Tag releases with semantic versioning (`v0.4.0` …).
+- Long-running speculative work stays on `research/*` and is periodically rebased or archived.
 
-**Link**: https://arxiv.org/abs/2411.01433 (or HTML version for reading).
+## 4. Coding & Quality Standards
 
-### llama.cpp MoE Support (Current Foundation)
-llama.cpp provides practical MoE offloading:
-- `--cpu-moe` or `--n-cpu-moe N`: Keeps expert weights from (parts of) layers in CPU/RAM.
-- `-ot "pattern=CPU"` or `--override-tensor`: Fine-grained tensor placement (e.g., specific layers' exps to CPU).
-- `-ngl N`: GPU layers.
-- Community work: Discussions on two-tier GPU+RAM expert caches, eviction policies, --moe-cache flags in forks, ik_llama.cpp hybrid enhancements.
-- Recent: SYCL fused top-k MoE, etc.
+- Python 3.10+, type hints, Pydantic for all external interfaces.
+- No new hard-coded model paths or magic numbers. Use configuration.
+- Tests: unit tests for pure logic + the existing empirical scripts (KV, strategy, tool calling).
+- Conventional commits.
+- Update ROADMAP.md and this file in the same PR when phase status changes.
 
-**Strategy for AetherForge**: Start by intelligently deciding *which* experts/layers to offload via these flags or by wrapping the engine, adding predictive logic on top. Later contribute or extend for native dynamic/mixed-prec support.
+## 5. Decision Log (append-only)
 
-**Key Files to Study** (in llama.cpp):
-- MoE-related in src/ (llama.cpp, ggml*.c for tensor handling).
-- Conversion scripts for MoE models.
-- CLI/server code for flag parsing.
+**2026-07-13** — Initial decisions: Python-first control plane on top of llama.cpp, focus on MoE, agent hooks early, RTX 4060 as primary target.
 
-### Colibri Fork Learnings (user's jayjz/colibri)
-- Extreme disk-streaming for massive MoE (GLM-5.2 744B) on ~25GB RAM.
-- Features like router-lookahead prefetch, auto expert cache sizing based on available RAM, KV persistence, OpenAI-compatible API.
-- Pure C core, Windows/Metal/CUDA support in fork.
-- Emphasizes quality preservation and resource policies.
+**2026-07-17** — Adopted teardown + KV serialization as the production Fast-Swap mechanism. True dynamic expert movement moved to research track. Schema generation made dynamic from Pydantic. Economic Gatekeeper made the authority for swap approval.
 
-**Relevance**: Techniques for auto cache adaptation and prefetch ideas can inspire AetherForge heuristics. AetherForge focuses more on predictive intelligence and agent integration rather than extreme scale.
+*(Add new dated entries here.)*
 
-### Other Relevant Areas
-- Speculative decoding & MTP (in Colibri fork).
-- KV cache management and compression.
-- General LLM inference optimization (quantization, Flash Attention, etc.).
-- Agent frameworks: How OpenClaw/Hermes/etc. currently call inference and manage context.
+## 6. Research References (kept for context)
 
-## 3. Architecture Overview (Target for MVP and Evolution)
+- HOBBIT (arXiv:2411.01433) — mixed-precision expert offloading, importance scoring, prefetching.
+- llama.cpp `--n-cpu-moe` / `--override-tensor` — current practical hybrid MoE baseline.
+- Community hot-expert cache experiments and disk-paging PoCs.
 
-**MVP Architecture (Python-First)**:
-- **Core**: Python layer that orchestrates llama.cpp (via llama-cpp-python bindings or CLI + parsing, or direct integration later).
-- **Components**:
-  - **Importance Scorer**: Heuristic (gating magnitude simulation or post-hoc analysis) + future small predictor model.
-  - **Predictor/Prefetcher**: Layer similarity-based or simple history-based prediction of next experts.
-  - **Decision Engine**: Decides offload strategy, precision hints, cache priorities. Outputs overrides or configures the backend.
-  - **Cache Manager**: Tracks state; simple LRU/LFU + importance weighting on top of llama.cpp mechanisms.
-  - **Agent Interface**: API to query state, set fidelity mode, receive callbacks.
-- **Data Flow**: Agent request -> Decision Engine (with context/task info) -> Configure llama.cpp run (flags/overrides) -> Execute -> Post-process/feedback for learning.
+These inform the research track. They do not define the current production path.
 
-**Future Layers**:
-- C++ extensions or patches to llama.cpp for lower-overhead dynamic loading/mixed-prec.
-- Small auxiliary ML model for better prediction (trained on traces from target hardware).
-- Deeper KV cache integration.
-- Multi-agent shared memory.
+## 7. Testing & Benchmarking
 
-**Key Constraints**: Must not add significant latency. Start heuristic, profile everything. Prioritize MoE routed experts.
+- Always record hardware (GPU, VRAM, RAM, CUDA version).
+- Baselines: vanilla llama.cpp, static `--n-cpu-moe`, previous AetherForge version.
+- Metrics: swap latency, post-swap t/s, context survival, Gatekeeper accept/reject rate.
+- Prefer scripts that can be re-run by others.
 
-## 4. Decision Log (Living Document)
+## 8. Packaging & Usability Goals
 
-**Initial Decisions (July 13, 2026)**:
-- **Name**: AetherForge (ties to personal branding, "forging" better systems).
-- **Scope**: Strict MVP on MoE expert management with predictive elements. No full hypervisor or dense model support initially.
-- **Base**: Build on llama.cpp MoE offloading features rather than from-scratch engine (Colibri is complementary for extreme cases).
-- **Language Start**: Python orchestration layer for rapid prototyping and agent integration. Move performance-critical parts to C++ later.
-- **Evaluation Hardware**: Primary = user's RTX 4060 + 32GB RAM setup. Secondary = note general consumer applicability.
-- **Integration Priority**: Design hooks early for OpenClaw and similar agent systems.
-- **Documentation**: Heavy emphasis on research synthesis, honest benchmarks, and decision rationale.
+Before calling anything “production”:
+- Configuration file or environment variables for all important knobs.
+- Clear README with known limitations.
+- Minimal reproducible example for agent integration.
+- No requirement to edit source code for normal use.
 
-**Future Decisions to Track**: Choice of exact MoE test models, specific thresholds/policies, whether to fork llama.cpp or wrap, etc. Update this section with date and rationale for each major choice.
+## 9. Open Risks
 
-## 5. Coding Standards & Style
-- **Python**: PEP 8, type hints where helpful, clear docstrings. Modular components (scorer, predictor, decision, cache, agent_interface).
-- **C++ (later)**: Follow llama.cpp style where extending; consistent naming, performance-focused.
-- **General**: Readable over clever. Comment research inspirations. Profile before optimizing.
-- **Testing**: Unit tests for components; integration tests with small MoE models; benchmark scripts.
-- **Versioning**: Semantic versioning once past MVP. Changelog in repo.
-
-## 6. Development Workflow
-- **Git**: Feature branches from main. PRs with description linking to issues/research.
-- **Commits**: Conventional commits (feat:, fix:, docs:, refactor:). Reference issues.
-- **Issues**: Use for tasks, research questions, benchmark results. Label (MVP, research, benchmark, integration).
-- **Tracking**: Update ROADMAP.md and this file regularly. Consider a PROGRESS.md or use issues/projects.
-- **Environment**: Python venv or conda. llama.cpp build as needed. Document setup in README or SETUP.md.
-- **CI**: Basic (lint, tests) once mature; optional GitHub Actions.
-
-## 7. Benchmarking Methodology
-- **Hardware**: Record exact specs (GPU VRAM, RAM, storage speed, CPU).
-- **Models**: Start with accessible MoE like Mixtral-8x7B GGUF, Qwen MoE variants, Phi-MoE. Note quantization.
-- **Baselines**: Vanilla llama.cpp (full GPU where possible), --n-cpu-moe / -ot basic offload, any replicable HOBBIT-like static version.
-- **Metrics**:
-  - Memory: Peak VRAM, RAM usage during inference.
-  - Speed: Prefill time, decode tokens/sec (average, p50/p95).
-  - Quality: Perplexity or task-specific (GSM8K, etc.) if applicable; human eval or proxy for agent tasks.
-  - Overhead: Added latency from decision logic.
-- **Workloads**: Simple generation + simulated agent loops (multi-turn, tool-use patterns).
-- **Reproducibility**: Script everything; commit benchmark configs and results.
-- **Reporting**: Tables/graphs in repo (e.g., in docs/ or benchmark_results.md). Honest about limitations and variance.
-
-## 8. Agent Integration Guidelines
-- **Hooks/API**: Expose functions to get current cache state, predicted next experts, set "fidelity mode" (high-prec bias), receive post-inference feedback.
-- **Context Awareness**: Pass task type, context length estimate, importance hints from agent to decision engine.
-- **Examples**: Provide minimal example integrating with a simple agent or OpenClaw module.
-- **Goal**: Allow agents to treat the hypervisor as an intelligent backend rather than black-box inference.
-
-## 9. Resources & Tools
-- **Core Papers**: HOBBIT arXiv, related MoE offloading papers.
-- **Codebases**: llama.cpp (https://github.com/ggml-org/llama.cpp), user's Colibri fork, ik_llama.cpp if relevant, community MoE cache discussions.
-- **Models**: Hugging Face GGUF MoE models.
-- **Profiling**: nvidia-smi, llama.cpp built-in logging, Python profilers.
-- **Docs**: Keep this file and ROADMAP.md updated. Use clear diagrams where helpful (ASCII or images later).
-
-## 10. Contribution & Maintenance
-- Open to contributions once MVP ships.
-- Issues and PRs welcome with clear descriptions.
-- Maintain decision log and research notes for transparency.
-- License: TBD (likely MIT or Apache 2.0 like related projects).
-
-## 11. Risks, Assumptions & Open Questions
-- **Risks**: Overhead from added logic; complexity of llama.cpp internals; hardware-specific tuning.
-- **Assumptions**: Heuristic importance/prediction sufficient for MVP gains; agent workloads benefit from smarter offloading.
-- **Open Questions**: Exact implementation of importance scoring without full gating access; best way to apply mixed-precision dynamically; long-term path to native llama.cpp contributions.
-
-*This is a living document. Update frequently with new research, decisions, and learnings.*
+- Full model reload (even with KV restore) is still relatively expensive.
+- Reliance on llama-cpp-python behavior across versions.
+- Local models vary widely in tool-calling reliability.
+- True dynamic tensor movement may require a custom llama.cpp patch or fork.
 
 ---
 
-**End of PROJECTGUIDELINES.md**
+*This is a living document. Update it when reality changes.*
