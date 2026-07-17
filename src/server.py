@@ -124,7 +124,47 @@ async def get_cache_status():
         "active_strategy": hardware_engine.current_strategy if hardware_engine else current_strategy,
         "engine_available": hardware_engine is not None
     }
-
+@app.get("/system/tools")
+async def get_tool_schema():
+    """
+    Exports the AetherForge capabilities as an OpenAI-compatible function schema.
+    Agents can ping this endpoint to dynamically learn how to manage their own VRAM.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": "aetherforge_optimize_vram",
+            "description": (
+                "Hypervisor control: Dynamically allocates physical VRAM layers based on the upcoming task complexity. "
+                "Call this BEFORE executing heavy reasoning, coding, or summarization tasks to optimize tokens/sec. "
+                "The hypervisor will mathematically validate the swap to prevent context latency penalties."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["high_fidelity", "balanced", "aggressive_quant"],
+                        "description": (
+                            "The VRAM strategy to apply. "
+                            "'high_fidelity' (15 layers) for deep coding/reasoning. "
+                            "'balanced' (10 layers) for standard agent dialog. "
+                            "'aggressive_quant' (2 layers) for simple routing/summarization."
+                        )
+                    },
+                    "context_text": {
+                        "type": "string",
+                        "description": "The exact current conversation history or prefix so the hypervisor can calculate exact KV-Cache size."
+                    },
+                    "expected_output_tokens": {
+                        "type": "integer",
+                        "description": "Your best estimate of how many tokens you are about to generate."
+                    }
+                },
+                "required": ["mode", "context_text", "expected_output_tokens"]
+            }
+        }
+    }
 @app.post("/system/strategy")
 async def update_strategy(payload: StrategyPayload):
     global current_strategy
