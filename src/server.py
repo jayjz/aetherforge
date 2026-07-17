@@ -190,6 +190,33 @@ async def get_cache_status():
         "active_strategy": hardware_engine.current_strategy if hardware_engine else current_strategy,
         "engine_available": hardware_engine is not None
     }
+    
+@app.get("/system/metrics")
+async def get_metrics():
+    """
+    Exposes live hypervisor telemetry. 
+    Agents use this to gauge VRAM pressure and current throughput viability.
+    """
+    # Aggregate Gatekeeper live TPS data
+    gatekeeper_telemetry = {
+        mode: {
+            "live_tps": profile["live_tps"],
+            "baseline_tps": profile["decode_tps"]
+        }
+        for mode, profile in gatekeeper.profiles.items()
+    }
+    
+    return {
+        "timestamp": time.time(),
+        "active_strategy": current_strategy,
+        "vram_pressure": {
+            "current_mb": hypervisor_cache.current_vram_usage,
+            "budget_mb": hypervisor_cache.vram_budget_mb,
+            "utilization_pct": (hypervisor_cache.current_vram_usage / hypervisor_cache.vram_budget_mb) * 100
+        },
+        "performance_baselines": gatekeeper_telemetry,
+        "engine_state": "online" if hardware_engine else "simulation"
+    }
 
 @app.get("/system/tools")
 async def get_tool_schema():
