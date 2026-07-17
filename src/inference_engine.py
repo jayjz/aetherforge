@@ -43,6 +43,21 @@ class AetherEngine:
             n_ctx=2048,
             verbose=False
         )
+        
+    def count_tokens(self, text: str) -> int:
+        """
+        [NEW FEATURE] P0#1: Dynamic Token Counting
+        Uses the active native model tokenizer to calculate exact context depth 
+        without triggering inference.
+        """
+        if not self.llm:
+            print("[Engine] WARNING: Token count requested while LLM instance was offline.")
+            return 0
+            
+        # The .tokenize() method returns a list of integer token IDs.
+        # We encode strings to bytes because the C++ bindings expect raw binary formatting.
+        tokens = self.llm.tokenize(text.encode('utf-8'))
+        return len(tokens)
 
     def apply_strategy(self, mode: str) -> bool:
         """
@@ -115,6 +130,11 @@ if __name__ == "__main__":
     
     if os.path.exists(target_model):
         engine = AetherEngine(model_path=target_model)
+        
+        # Test new token counting mechanism
+        test_string = "This is a string to test the tokenizer accuracy."
+        token_count = engine.count_tokens(test_string)
+        print(f"[Test] Tokenizer evaluated '{test_string}' as {token_count} tokens.")
         
         # 1. Generate in standard balanced mode
         engine.generate("Write a one sentence summary of machine learning.", max_tokens=30)
