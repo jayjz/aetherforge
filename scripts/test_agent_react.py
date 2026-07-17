@@ -10,14 +10,14 @@ import requests
 import json
 from openai import OpenAI
 
-# AetherForge Control Plane API
-AETHERFORGE_URL = "http://127.0.0.1:8000"
+# AetherForge Configuration Link
+from src.config import settings
 
-# Initialize standard OpenAI client. 
-# Switch the base_url to "http://localhost:11434/v1" if using local Ollama.
+# Dynamically construct API URL from the single source of truth
+AETHERFORGE_URL = f"http://{settings.api_host}:{settings.api_port}"
+
 client = OpenAI(
-    api_key="sk-local-test-key", # Replace if testing against live OpenAI
-    # base_url="https://api.openai.com/v1" 
+    api_key="sk-local-test-key", 
 )
 
 def fetch_aetherforge_tools():

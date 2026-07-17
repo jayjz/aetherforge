@@ -1,7 +1,8 @@
 # --- AetherForge Core Dependencies ---
-# Pinned to stable, compatible versions to prevent pipeline breakage
 
 # Model Introspection & Inference
+# NOTE: Windows/Linux users must compile llama-cpp-python with CUDA support.
+# See documentation for CMAKE_ARGS="-DLLAMA_CUBLAS=on"
 gguf>=0.10.0
 llama-cpp-python>=0.2.79
 scikit-build-core[pyproject]>=0.9.2
@@ -10,10 +11,12 @@ scikit-build-core[pyproject]>=0.9.2
 fastapi>=0.111.0
 uvicorn>=0.30.0
 pydantic>=2.7.0
+pydantic-settings>=2.2.1
+python-dotenv>=1.0.1
 
-# Mathematical Modeling & Simulation
-numpy>=1.26.0
+# Agent Integration & Network
+openai>=1.14.0
+requests>=2.31.0
 
-# Optional: For future token importance mapping & adapter work
-torch>=2.1.0
-transformers>=4.41.0
+# Mathematical Modeling & Simulation (Locked <2.0.0 to prevent C-API breakage)
+numpy>=1.26.0,<2.0.0
