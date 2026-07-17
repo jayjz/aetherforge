@@ -2,7 +2,7 @@
 AetherForge Hardware Engine (The Muscle)
 ========================================
 Manages physical execution of LLM generation via llama.cpp.
-Supports dynamic 'Fast-Swap' VRAM allocation based on Agent strategy.
+Supports dynamic 'Fast-Swap' VRAM allocation and KV-Cache preservation.
 """
 
 import os
@@ -45,24 +45,17 @@ class AetherEngine:
         )
         
     def count_tokens(self, text: str) -> int:
-        """
-        [NEW FEATURE] P0#1: Dynamic Token Counting
-        Uses the active native model tokenizer to calculate exact context depth 
-        without triggering inference.
-        """
+        """Uses the active native model tokenizer to calculate exact context depth."""
         if not self.llm:
             print("[Engine] WARNING: Token count requested while LLM instance was offline.")
             return 0
-            
-        # The .tokenize() method returns a list of integer token IDs.
-        # We encode strings to bytes because the C++ bindings expect raw binary formatting.
         tokens = self.llm.tokenize(text.encode('utf-8'))
         return len(tokens)
 
     def apply_strategy(self, mode: str) -> bool:
         """
-        Executes the Fast-Swap protocol. 
-        Tears down the active context and reallocates VRAM boundaries.
+        Executes the Fast-Swap protocol with State Serialization. 
+        Extracts KV-Cache, reallocates VRAM boundaries, and restores memory.
         """
         if mode not in self.STRATEGY_MAP:
             print(f"[Engine] Invalid strategy '{mode}'. Defaulting to balanced.")
@@ -78,19 +71,38 @@ class AetherEngine:
         
         start_time = time.time()
         
-        # 1. Destroy the current pointer
-        del self.llm
+        # 1. KV-Cache Extraction
+        saved_state = None
+        if self.llm:
+            try:
+                print("[Engine] Serializing active KV-Cache to System RAM...")
+                state_start = time.time()
+                saved_state = self.llm.save_state()
+                print(f" -> Extraction complete in {time.time() - state_start:.2f}s")
+            except Exception as e:
+                print(f"[!] WARNING: State extraction failed: {e}. Proceeding with cold restart.")
         
-        # 2. Force Python garbage collection to flush the GPU buffer
+        # 2. Hardware Teardown
+        del self.llm
         gc.collect()
         
-        # 3. Re-instantiate with new VRAM boundaries
+        # 3. Hardware Rebuild
         self._load_model(target_layers)
+        
+        # 4. KV-Cache Injection
+        if saved_state:
+            try:
+                print("[Engine] Injecting KV-Cache into new VRAM layout...")
+                restore_start = time.time()
+                self.llm.load_state(saved_state)
+                print(f" -> Injection complete in {time.time() - restore_start:.2f}s")
+            except Exception as e:
+                print(f"[CRITICAL] KV-Cache restoration failed: {e}. Memory wiped.")
         
         swap_time = time.time() - start_time
         self.current_strategy = mode
         
-        print(f"[Engine] VRAM Reallocation Complete in {swap_time:.2f}s.")
+        print(f"[Engine] Fast-Swap Protocol Complete in {swap_time:.2f}s.")
         return True
 
     def generate(self, prompt: str, max_tokens: int = 100) -> Dict[str, Any]:
@@ -123,31 +135,5 @@ class AetherEngine:
             }
         }
 
-
-# --- EXECUTION / TESTING ---
 if __name__ == "__main__":
-    target_model = r"models\DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf"
-    
-    if os.path.exists(target_model):
-        engine = AetherEngine(model_path=target_model)
-        
-        # Test new token counting mechanism
-        test_string = "This is a string to test the tokenizer accuracy."
-        token_count = engine.count_tokens(test_string)
-        print(f"[Test] Tokenizer evaluated '{test_string}' as {token_count} tokens.")
-        
-        # 1. Generate in standard balanced mode
-        engine.generate("Write a one sentence summary of machine learning.", max_tokens=30)
-        
-        # 2. Simulate the Agent injecting a new strategy
-        engine.apply_strategy("aggressive_quant")
-        
-        # 3. Generate under the new low-VRAM constraints
-        engine.generate("What is 2+2?", max_tokens=10)
-        
-        # 4. Agent needs heavy coding power again
-        engine.apply_strategy("high_fidelity")
-        
-        engine.generate("Write a python function to fetch an API.", max_tokens=50)
-    else:
-        print("[!] Download a model first to test hardware execution.")
+    pass # Scripts handle testing now

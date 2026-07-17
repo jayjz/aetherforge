@@ -8,7 +8,6 @@ from typing import List, Optional, Dict, Any
 
 from src.cache_manager import AetherCacheManager
 
-# Graceful import to prevent Linux environments from crashing if llama-cpp-python isn't optimized
 try:
     from src.inference_engine import AetherEngine
     HAS_ENGINE = True
@@ -19,36 +18,34 @@ except ImportError:
 class EconomicGatekeeper:
     """
     Mathematically validates if a VRAM swap is profitable.
-    Prevents high-overhead context vaporization (KV-Cache destruction)
-    unless the token throughput dividend covers the cost.
+    KV-Cache is now preserved, eliminating the prefill penalty.
     """
     def __init__(self):
-        # Physical baseline time to tear down and rebuild a llama.cpp instance
         self.swap_penalty_seconds = 5.8 
         
-        # Hardware profiling boundaries verified on local consumer hardware
         self.profiles = {
-            "high_fidelity": {"decode_tps": 23.71, "prefill_tps": 1800},
-            "balanced": {"decode_tps": 11.10, "prefill_tps": 400},
-            "aggressive_quant": {"decode_tps": 12.10, "prefill_tps": 600}
+            "high_fidelity": {"decode_tps": 23.71},
+            "balanced": {"decode_tps": 11.10},
+            "aggressive_quant": {"decode_tps": 12.10}
         }
 
     def evaluate_swap(self, current_mode: str, target_mode: str, context_tokens: int, expected_output: int) -> bool:
         if current_mode == target_mode:
-            return False  # Already in the optimal layout
+            return False 
             
         current = self.profiles.get(current_mode, self.profiles["balanced"])
         target = self.profiles.get(target_mode, self.profiles["balanced"])
         
         # Scenario A: Remain in the current sub-optimal strategy
-        # The KV-Cache is already warm, so prefill penalty is negligible.
         time_to_stay = expected_output / current["decode_tps"]
         
         # Scenario B: Fire a VRAM Fast-Swap
-        # We pay the physical hardware swap overhead + cold KV-Cache prefill re-ingestion
-        target_prefill_time = context_tokens / target["prefill_tps"]
+        # Prefill penalty is eliminated by KV-Cache serialization.
+        # We only pay the physical swap time + the IO cost of moving the state dict in RAM.
+        state_io_penalty = 0.5 + (context_tokens * 0.0001)
         target_generation_time = expected_output / target["decode_tps"]
-        time_to_swap = self.swap_penalty_seconds + target_prefill_time + target_generation_time
+        
+        time_to_swap = self.swap_penalty_seconds + state_io_penalty + target_generation_time
         
         print(f"\n[Gatekeeper] Evaluation Request: {current_mode.upper()} -> {target_mode.upper()}")
         print(f" -> Active Context size: {context_tokens} tokens | Anticipated Output: {expected_output} tokens")
@@ -74,14 +71,12 @@ async def lifespan(app: FastAPI):
     global hardware_engine
     print("\n[API] Booting AetherForge Control Plane...")
     
-    # 1. Load Topology into the Brain
     topo_path = "moe_topology.json"
     if os.path.exists(topo_path):
         hypervisor_cache.load_topology(topo_path)
     else:
         print("[!] Warning: moe_topology.json not found. Run model_analyzer.py first.")
 
-    # 2. Attempt to initialize the Hardware Engine (The Muscle)
     model_path = r"models\DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf"
     
     if HAS_ENGINE and os.path.exists(model_path):
@@ -118,7 +113,6 @@ class GenerationPayload(BaseModel):
 # --- ROUTES ---
 @app.get("/system/cache")
 async def get_cache_status():
-    """Returns the live state of the predictive hypervisor."""
     vram_experts = [e.expert_id for e in hypervisor_cache.experts.values() if e.location == "VRAM"]
     
     return {
@@ -133,17 +127,14 @@ async def get_cache_status():
 
 @app.post("/system/strategy")
 async def update_strategy(payload: StrategyPayload):
-    """The Agent-to-Engine Bridge: Injects new memory management rules mid-task."""
     global current_strategy
     target_mode = payload.mode.lower()
     
-    # Intercept and override agent estimates if exact text history is provided
     context_size = payload.estimated_context_tokens
     if payload.context_text and hardware_engine:
         context_size = hardware_engine.count_tokens(payload.context_text)
         print(f"[API] Tokenizer override: Agent text history dynamically counted at {context_size} tokens.")
     
-    # Evaluate if switching strategies introduces an aggregate latency penalty
     is_profitable = gatekeeper.evaluate_swap(
         current_mode=current_strategy,
         target_mode=target_mode,
@@ -154,17 +145,14 @@ async def update_strategy(payload: StrategyPayload):
     if not is_profitable:
         return {
             "status": "rejected",
-            "reason": "Swap latency overhead and KV-Cache rebuild cost exceed raw throughput gains.",
+            "reason": "Swap latency overhead exceeds raw throughput gains.",
             "active_mode": current_strategy
         }
     
     print(f"\n[API] OVERRIDE: Gatekeeper approved strategy swap -> {target_mode.upper()}")
-    if payload.priority_layers:
-        print(f"[API] Locking layers into priority retention: {payload.priority_layers}")
         
     current_strategy = target_mode
     
-    # Physically execute the VRAM fast-swap if hardware is available
     if hardware_engine:
         success = hardware_engine.apply_strategy(current_strategy)
         if not success:
@@ -175,7 +163,6 @@ async def update_strategy(payload: StrategyPayload):
 
 @app.post("/generate")
 async def generate_text(payload: GenerationPayload):
-    """Executes inference while actively applying the injected strategy."""
     global current_strategy
 
     active_mode = payload.strategy.mode if payload.strategy else current_strategy
@@ -198,7 +185,6 @@ async def generate_text(payload: GenerationPayload):
         }
         
     else:
-        # Just-in-Time (JIT) Gatekeeper Interception
         if hardware_engine.current_strategy != active_mode:
             exact_prompt_tokens = hardware_engine.count_tokens(payload.prompt)
             print(f"[API] JIT Tokenizer verification: Generation prompt measured at {exact_prompt_tokens} tokens.")
