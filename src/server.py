@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
 from src.cache_manager import AetherCacheManager
+from src.config import settings
 
 try:
     from src.inference_engine import AetherEngine
@@ -14,19 +15,18 @@ try:
 except ImportError:
     HAS_ENGINE = False
 
-# --- DETEKTED ECONOMIC GATEKEEPER ---
 class EconomicGatekeeper:
     """
     Mathematically validates if a VRAM swap is profitable.
-    KV-Cache is now preserved, eliminating the prefill penalty.
+    All magic numbers and scaling heuristics have been completely externalized.
     """
     def __init__(self):
-        self.swap_penalty_seconds = 5.8 
+        self.swap_penalty_seconds = settings.swap_penalty_seconds 
         
         self.profiles = {
-            "high_fidelity": {"decode_tps": 23.71},
-            "balanced": {"decode_tps": 11.10},
-            "aggressive_quant": {"decode_tps": 12.10}
+            "high_fidelity": {"decode_tps": settings.tps_high_fidelity},
+            "balanced": {"decode_tps": settings.tps_balanced},
+            "aggressive_quant": {"decode_tps": settings.tps_aggressive_quant}
         }
 
     def evaluate_swap(self, current_mode: str, target_mode: str, context_tokens: int, expected_output: int) -> bool:
@@ -36,13 +36,10 @@ class EconomicGatekeeper:
         current = self.profiles.get(current_mode, self.profiles["balanced"])
         target = self.profiles.get(target_mode, self.profiles["balanced"])
         
-        # Scenario A: Remain in the current sub-optimal strategy
         time_to_stay = expected_output / current["decode_tps"]
         
-        # Scenario B: Fire a VRAM Fast-Swap
-        # Prefill penalty is eliminated by KV-Cache serialization.
-        # We only pay the physical swap time + the IO cost of moving the state dict in RAM.
-        state_io_penalty = 0.5 + (context_tokens * 0.0001)
+        # IO penalty scaling pulled dynamically from settings
+        state_io_penalty = settings.state_io_base_seconds + (context_tokens * settings.state_io_per_token_seconds)
         target_generation_time = expected_output / target["decode_tps"]
         
         time_to_swap = self.swap_penalty_seconds + state_io_penalty + target_generation_time
@@ -60,12 +57,14 @@ class EconomicGatekeeper:
         return True
 
 # --- GLOBAL STATE ---
-hypervisor_cache = AetherCacheManager(vram_budget_mb=8000, ram_budget_mb=32000)
+hypervisor_cache = AetherCacheManager(
+    vram_budget_mb=settings.vram_budget_mb, 
+    ram_budget_mb=settings.ram_budget_mb
+)
 hardware_engine = None
 current_strategy = "balanced"
 gatekeeper = EconomicGatekeeper()
 
-# --- MODERN LIFESPAN MANAGER ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global hardware_engine
@@ -74,26 +73,35 @@ async def lifespan(app: FastAPI):
     topo_path = "moe_topology.json"
     if os.path.exists(topo_path):
         hypervisor_cache.load_topology(topo_path)
-    else:
-        print("[!] Warning: moe_topology.json not found. Run model_analyzer.py first.")
 
-    model_path = r"models\DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf"
+    # STRICT STRANGER TEST VALIDATION: Fail early, fail visibly.
+    if not os.path.exists(settings.model_path):
+        critical_msg = (
+            f"\n[CRITICAL ERROR] AetherForge cannot boot. Model file not found at: '{settings.model_path}'\n"
+            f"Please verify your local path configuration or populate your .env file using .env.example."
+        )
+        print(critical_msg)
+        raise FileNotFoundError(critical_msg)
     
-    if HAS_ENGINE and os.path.exists(model_path):
+    if HAS_ENGINE:
         try:
-            print("[API] Hardware Engine detected. Preparing physical tensor bridge...")
-            hardware_engine = AetherEngine(model_path=model_path, vram_budget_mb=8000)
-            print("[API] Consumer Hardware Acceleration Engine Active. Awaiting commands.")
+            print(f"[API] Hardware Engine active. Targeting model: {settings.model_path}")
+            hardware_engine = AetherEngine(
+                model_path=settings.model_path, 
+                vram_budget_mb=settings.vram_budget_mb,
+                n_ctx=settings.n_ctx
+            )
         except Exception as e:
-            print(f"[API] Hardware boot failed. Error: {e}")
-            hardware_engine = None
+            print(f"[API] Fatal initialization crash on CUDA layer: {e}")
+            raise RuntimeError(f"Hardware initialization failed: {e}")
     else:
-        print("[API] Running in Brain-Only Simulation Mode. Hardware Engine bypassed.")
+        print("[API] Running in Brain-Only Simulation Mode. (Inference libraries uninstalled).")
         
     yield
     print("\n[API] Shutting down AetherForge Control Plane...")
 
-app = FastAPI(title="AetherForge Hypervisor API", version="0.3.0", lifespan=lifespan)
+# Version bumped to match Phase A deliverable state
+app = FastAPI(title="AetherForge Hypervisor API", version="0.4.0", lifespan=lifespan)
 
 # --- PYDANTIC SCHEMAS ---
 class StrategyPayload(BaseModel):
@@ -146,10 +154,7 @@ async def get_tool_schema():
     Exports AetherForge capabilities as an OpenAI-compatible function schema.
     Generated dynamically from the StrategyPayload Pydantic model to guarantee zero drift.
     """
-    # Extract the raw JSON schema directly from the Pydantic model
     base_schema = StrategyPayload.model_json_schema()
-    
-    # Prune Pydantic-specific metadata that confuses basic LLMs
     properties = base_schema.get("properties", {})
     for prop in properties.values():
         prop.pop("title", None)
