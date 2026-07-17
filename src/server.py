@@ -97,11 +97,26 @@ app = FastAPI(title="AetherForge Hypervisor API", version="0.3.0", lifespan=life
 
 # --- PYDANTIC SCHEMAS ---
 class StrategyPayload(BaseModel):
-    mode: str = Field(..., description="The requested VRAM allocation mode.")
-    priority_layers: Optional[List[int]] = []
-    estimated_context_tokens: Optional[int] = Field(500, description="Size of current history context to re-evaluate.")
-    expected_output_tokens: Optional[int] = Field(300, description="Agent's projected token generation size.")
-    context_text: Optional[str] = Field(None, description="The actual text history. If provided, overrides estimates with exact math.")
+    mode: str = Field(
+        ..., 
+        description="The VRAM strategy: 'high_fidelity' (max layers for coding/reasoning), 'balanced' (standard chat), or 'aggressive_quant' (summarization/routing)."
+    )
+    priority_layers: Optional[List[int]] = Field(
+        default=[], 
+        description="Specific layer indices to lock into VRAM. Leave empty unless specifically required."
+    )
+    estimated_context_tokens: Optional[int] = Field(
+        500, 
+        description="Estimated token size of the current context history."
+    )
+    expected_output_tokens: Optional[int] = Field(
+        300, 
+        description="Estimated number of tokens the upcoming generation will require."
+    )
+    context_text: Optional[str] = Field(
+        None, 
+        description="The exact raw prompt or conversation history. If provided, the Gatekeeper uses this for exact token counting."
+    )
 
 class GenerationPayload(BaseModel):
     prompt: str
@@ -124,47 +139,39 @@ async def get_cache_status():
         "active_strategy": hardware_engine.current_strategy if hardware_engine else current_strategy,
         "engine_available": hardware_engine is not None
     }
+
 @app.get("/system/tools")
 async def get_tool_schema():
     """
-    Exports the AetherForge capabilities as an OpenAI-compatible function schema.
-    Agents can ping this endpoint to dynamically learn how to manage their own VRAM.
+    Exports AetherForge capabilities as an OpenAI-compatible function schema.
+    Generated dynamically from the StrategyPayload Pydantic model to guarantee zero drift.
     """
+    # Extract the raw JSON schema directly from the Pydantic model
+    base_schema = StrategyPayload.model_json_schema()
+    
+    # Prune Pydantic-specific metadata that confuses basic LLMs
+    properties = base_schema.get("properties", {})
+    for prop in properties.values():
+        prop.pop("title", None)
+        prop.pop("default", None)
+
     return {
         "type": "function",
         "function": {
             "name": "aetherforge_optimize_vram",
             "description": (
-                "Hypervisor control: Dynamically allocates physical VRAM layers based on the upcoming task complexity. "
+                "Hypervisor control: Dynamically allocates physical VRAM layers based on upcoming task complexity. "
                 "Call this BEFORE executing heavy reasoning, coding, or summarization tasks to optimize tokens/sec. "
                 "The hypervisor will mathematically validate the swap to prevent context latency penalties."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "mode": {
-                        "type": "string",
-                        "enum": ["high_fidelity", "balanced", "aggressive_quant"],
-                        "description": (
-                            "The VRAM strategy to apply. "
-                            "'high_fidelity' (15 layers) for deep coding/reasoning. "
-                            "'balanced' (10 layers) for standard agent dialog. "
-                            "'aggressive_quant' (2 layers) for simple routing/summarization."
-                        )
-                    },
-                    "context_text": {
-                        "type": "string",
-                        "description": "The exact current conversation history or prefix so the hypervisor can calculate exact KV-Cache size."
-                    },
-                    "expected_output_tokens": {
-                        "type": "integer",
-                        "description": "Your best estimate of how many tokens you are about to generate."
-                    }
-                },
-                "required": ["mode", "context_text", "expected_output_tokens"]
+                "properties": properties,
+                "required": base_schema.get("required", [])
             }
         }
     }
+
 @app.post("/system/strategy")
 async def update_strategy(payload: StrategyPayload):
     global current_strategy
