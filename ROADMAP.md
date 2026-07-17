@@ -1,33 +1,85 @@
 # 🗺️ AetherForge Roadmap
 
-AetherForge is evolving from a static inference wrapper into an **Agent-Aware Dynamic Hypervisor**. Our MVP strategy focuses on **Phase-Based Layer Orchestration**—allowing autonomous agents to hot-swap MoE layers between VRAM and RAM mid-session based on task priority.
+**Last updated: 2026-07-17**
+
+AetherForge is an agent-aware memory hypervisor for local MoE inference on consumer hardware.  
+Current production path: controlled Fast-Swap (model reload with different layer counts) + KV-cache serialization + Economic Gatekeeper + OpenAI-compatible tool schema.
+
+We ship the reliable path first. True in-memory expert routing remains a research track.
 
 ---
 
-## 🟢 Phase 1: The Control Plane (Completed)
-Establishing the pure-Python intelligence to map and predict memory usage without touching CUDA.
+## Current Status (v0.3.x)
 
-- [x] **Introspection Layer:** Safe parsing of GGUF headers to map MoE topology (`model_analyzer.py`).
-- [x] **The Brain:** Predictive VRAM mathematics tracking layer/expert memory footprints (`cache_manager.py`).
-- [x] **API Gateway:** FastAPI server listening for agent strategy commands.
-- [x] **Environment Resiliency:** CPU/Simulation fallback for cross-platform development.
+**Working today**
+- [x] Control plane (FastAPI + Pydantic)
+- [x] Strategy modes (`high_fidelity` / `balanced` / `aggressive_quant`)
+- [x] KV-cache survival across Fast-Swaps
+- [x] Economic Gatekeeper (rejects unprofitable swaps)
+- [x] Dynamic OpenAI tool schema generation from Pydantic
+- [x] Minimal ReAct-style agent discovery test
 
-## 🟡 Phase 2: The Tensor Bridge (Current Focus)
-Connecting the API's strategy to the C++ hardware engine using Dynamic Layer Orchestration.
+**Still hard-coded / fragile**
+- Model path, strategy → layer mapping, Gatekeeper numbers, `n_ctx`
+- No configuration system
+- Limited observability
+- Documentation lag
 
-- [x] Define abstract `ITensorBridge` and immutable `MemoryInstruction` payloads.
-- [ ] **Dynamic Reallocation Hack:** Map `ctypes` bindings to forcefully alter `llama_context` memory blocks.
-- [ ] **Phase-Based Layer Swapping:** Implement Option B (shifting blocks of MoE layers in/out of VRAM based on Agent Mode: `HIGH_FIDELITY` vs `AGGRESSIVE_QUANT`).
-- [ ] **Latency Mitigation:** Implement asynchronous pre-fetching (loading Layer block B while the GPU computes Layer block A).
+---
 
-## ⚪ Phase 3: Agent Integration
-Wiring the hypervisor directly into standard agent workflows.
+## Phase A — Production Hardening (Next, v0.4.0)
 
-- [ ] Build the `AetherForge Tool` for standard frameworks (LangChain / AutoGen / n8n).
-- [ ] Implement automatic "Tool-to-Strategy" mapping (e.g., Code Execution tool automatically triggers `HIGH_FIDELITY` memory state).
-- [ ] Expose live hardware telemetry (VRAM/Temp) to the Agent's system prompt context.
+**Goal**: Make the current system something a stranger can clone, configure, and depend on.
 
-## ⚪ Phase 4: Beyond the MVP
-- [ ] Support for MLX Engine (Apple Silicon / Mac Unified Memory).
-- [ ] Custom KV-Cache compression based on context relevance.
-- [ ] Multi-model orchestration (swapping out small routing models for large reasoning models in a single VRAM pool).
+- [ ] Configuration system (YAML/ENV) for model path, strategies, Gatekeeper thresholds, `n_ctx`, ports
+- [ ] Single source of truth for tool schema (already started) + client library consistency
+- [ ] Structured logging + basic metrics endpoint
+- [ ] Proper error handling and graceful degradation
+- [ ] Automated tests (unit + the existing empirical scripts) + minimal CI
+- [ ] Updated README with honest setup instructions and known limitations
+- [ ] Semantic versioning + CHANGELOG
+
+**Exit criteria**: A new user can install, point at their own GGUF, change strategies via the tool, and get reproducible behavior without editing source.
+
+---
+
+## Phase B — Real Agent Integration (v0.5.0)
+
+**Goal**: Prove value inside actual orchestrators.
+
+- [ ] Clean LangGraph / CrewAI / n8n integration examples
+- [ ] Live measured t/s fed back into Gatekeeper (replace static numbers)
+- [ ] Optional MCP server surface
+- [ ] Telemetry usable by agents (current strategy, last swap cost, VRAM pressure)
+
+**Exit criteria**: At least one non-trivial agent loop demonstrably benefits from autonomous strategy changes with long context.
+
+---
+
+## Phase C — Research Track (parallel, not blocking)
+
+**Goal**: Explore true dynamic expert movement and advanced caching.
+
+- [ ] Investigate / prototype hot-expert caching or runtime tensor movement (requires careful evaluation of llama.cpp / ggml-backend capabilities)
+- [ ] Mixed-precision expert handling (HOBBIT-inspired)
+- [ ] Asynchronous pre-fetch experiments
+- [ ] Cross-platform (MLX / Metal) exploration
+
+These live on `research/*` branches. Successful results are extracted cleanly into `main` only after they are stable and configurable.
+
+---
+
+## Later
+
+- Multi-model orchestration
+- KV compression / relevance-based eviction
+- Packaging (pip, Docker)
+- Broader hardware profiles
+
+---
+
+## Versioning Policy
+
+- `0.x` = pre-1.0, breaking changes allowed with notes
+- Tag every meaningful release on `main`
+- Keep `main` always runnable
