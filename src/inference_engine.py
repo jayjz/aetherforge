@@ -10,37 +10,40 @@ import time
 import gc
 from typing import Dict, Any
 from llama_cpp import Llama
+from src.config import settings
 
 class AetherEngine:
-    # Pre-defined memory profiles for an 8GB VRAM budget (RTX 4060)
-    STRATEGY_MAP = {
-        "high_fidelity": 15,    # Maximizes VRAM for reasoning/coding
-        "balanced": 10,         # Standard operating mode
-        "aggressive_quant": 2   # Drops to System RAM for simple tasks, freeing VRAM
-    }
-
-    def __init__(self, model_path: str, vram_budget_mb: float = 8000):
+    def __init__(self, model_path: str, vram_budget_mb: float = 8000, n_ctx: int = 4096):
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model not found at {model_path}")
             
         self.model_path = model_path
         self.vram_budget_mb = vram_budget_mb
+        self.n_ctx = n_ctx
         self.current_strategy = "balanced"
         self.llm = None
         
+        # Build memory profile dynamically from centralized config (No more magic numbers)
+        self.strategy_map = {
+            "high_fidelity": settings.layers_high_fidelity,
+            "balanced": settings.layers_balanced,
+            "aggressive_quant": settings.layers_aggressive_quant
+        }
+        
         print(f"[Engine] Booting AetherForge Inference Core...")
         print(f"[Engine] Target Model: {os.path.basename(model_path)}")
+        print(f"[Engine] Strategy Layer Scheme: {self.strategy_map}")
         
         # Initial boot
-        self._load_model(self.STRATEGY_MAP[self.current_strategy])
+        self._load_model(self.strategy_map[self.current_strategy])
         print("[Engine] CUDA Engine Online.")
 
     def _load_model(self, n_gpu_layers: int):
-        """Safely allocates the model into hardware memory."""
+        """Safely allocates the model into hardware memory boundaries."""
         self.llm = Llama(
             model_path=self.model_path,
             n_gpu_layers=n_gpu_layers,
-            n_ctx=2048,
+            n_ctx=self.n_ctx,
             verbose=False
         )
         
@@ -57,14 +60,14 @@ class AetherEngine:
         Executes the Fast-Swap protocol with State Serialization. 
         Extracts KV-Cache, reallocates VRAM boundaries, and restores memory.
         """
-        if mode not in self.STRATEGY_MAP:
+        if mode not in self.strategy_map:
             print(f"[Engine] Invalid strategy '{mode}'. Defaulting to balanced.")
             mode = "balanced"
             
         if mode == self.current_strategy:
             return True # No-op, already in correct state
             
-        target_layers = self.STRATEGY_MAP[mode]
+        target_layers = self.strategy_map[mode]
         print(f"\n[Engine] HARDWARE OVERRIDE INITIATED.")
         print(f" -> Shifting from '{self.current_strategy}' to '{mode}'.")
         print(f" -> Reallocating VRAM for {target_layers} layers...")
@@ -134,6 +137,3 @@ class AetherEngine:
                 "active_strategy": self.current_strategy
             }
         }
-
-if __name__ == "__main__":
-    pass # Scripts handle testing now
