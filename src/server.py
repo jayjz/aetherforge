@@ -9,13 +9,16 @@ from typing import List, Optional, Dict, Any
 from src.cache_manager import AetherCacheManager
 from src.config import settings
 
+# --- IMPORTS ---
 try:
     from src.inference_engine import AetherEngine
     HAS_ENGINE = True
 except ImportError:
     HAS_ENGINE = False
 
+from src.mock_engine import MockAetherEngine # Import the new emulator
 
+# --- DETEKTED ECONOMIC GATEKEEPER ---
 class EconomicGatekeeper:
     """
     Mathematically validates if a VRAM swap is profitable.
@@ -88,7 +91,7 @@ hardware_engine = None
 current_strategy = "balanced"
 gatekeeper = EconomicGatekeeper()
 
-
+# --- LIFESPAN MANAGER ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global hardware_engine
@@ -98,20 +101,12 @@ async def lifespan(app: FastAPI):
     if os.path.exists(topo_path):
         hypervisor_cache.load_topology(topo_path)
 
-    # STRICT STRANGER TEST VALIDATION: Fail early, fail visibly.
-    if not os.path.exists(settings.model_path):
-        critical_msg = (
-            f"\n[CRITICAL ERROR] AetherForge cannot boot. Model file not found at: '{settings.model_path}'\n"
-            f"Please verify your local path configuration or populate your .env file using .env.example."
-        )
-        print(critical_msg)
-        raise FileNotFoundError(critical_msg)
-
-    if HAS_ENGINE:
+    # Boot routing: Attempt CUDA first, fallback to Mock Engine
+    if HAS_ENGINE and os.path.exists(settings.model_path):
         try:
             print(f"[API] Hardware Engine active. Targeting model: {settings.model_path}")
             hardware_engine = AetherEngine(
-                model_path=settings.model_path,
+                model_path=settings.model_path, 
                 vram_budget_mb=settings.vram_budget_mb,
                 n_ctx=settings.n_ctx
             )
@@ -119,8 +114,14 @@ async def lifespan(app: FastAPI):
             print(f"[API] Fatal initialization crash on CUDA layer: {e}")
             raise RuntimeError(f"Hardware initialization failed: {e}")
     else:
-        print("[API] Running in Brain-Only Simulation Mode. (Inference libraries uninstalled).")
-
+        print("[API] WARNING: CUDA engine missing or model not found.")
+        print("[API] Falling back to MockAetherEngine. Operating in headless simulation mode.")
+        hardware_engine = MockAetherEngine(
+            model_path=settings.model_path,
+            vram_budget_mb=settings.vram_budget_mb,
+            n_ctx=settings.n_ctx
+        )
+        
     yield
     print("\n[API] Shutting down AetherForge Control Plane...")
 
@@ -273,27 +274,8 @@ async def update_strategy(payload: StrategyPayload):
 @app.post("/generate")
 async def generate_text(payload: GenerationPayload):
     global current_strategy
-
     active_mode = payload.strategy.mode if payload.strategy else current_strategy
 
-    if payload.simulate or not hardware_engine:
-        print(f"[API] Simulating token routing under '{active_mode}' strategy constraints...")
-        import random
-        for _ in range(5):
-            active = [(random.randint(0, 63), 0.8), (random.randint(0, 63), 0.2)]
-            hypervisor_cache.route_token(layer_index=0, active_experts=active)
-
-        await asyncio.sleep(1)
-        return {
-            "text": "[SIMULATED RESPONSE] AetherForge logic successfully routed.",
-            "metrics": {
-                "tokens_generated": payload.max_tokens,
-                "active_strategy": active_mode
-            },
-            "hardware_engaged": False
-        }
-
-    # Real hardware path
     if hardware_engine.current_strategy != active_mode:
         exact_prompt_tokens = hardware_engine.count_tokens(payload.prompt)
         print(f"[API] JIT Tokenizer verification: Generation prompt measured at {exact_prompt_tokens} tokens.")
@@ -313,6 +295,8 @@ async def generate_text(payload: GenerationPayload):
             active_mode = current_strategy
 
     print(f"[API] Engaging hardware layers under '{active_mode}' strategy constraints...")
+    
+    # This calls either the real CUDA engine or the Mock Engine interchangeably
     output = hardware_engine.generate(prompt=payload.prompt, max_tokens=payload.max_tokens)
 
     # --- CLOSE THE FEEDBACK LOOP ---
@@ -323,5 +307,5 @@ async def generate_text(payload: GenerationPayload):
     return {
         "text": output["text"],
         "metrics": output["metrics"],
-        "hardware_engaged": True
+        "hardware_engaged": HAS_ENGINE
     }
