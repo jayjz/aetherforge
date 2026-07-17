@@ -18,20 +18,63 @@ except ImportError:
 class EconomicGatekeeper:
     """
     Mathematically validates if a VRAM swap is profitable.
-    All magic numbers and scaling heuristics have been completely externalized.
+    Uses Exponential Moving Average (EMA) to learn actual hardware speeds in real-time.
     """
     def __init__(self):
         self.swap_penalty_seconds = settings.swap_penalty_seconds 
+        self.alpha = 0.3  # EMA smoothing factor. 30% new measurement, 70% historical.
         
+        # Initialize profiles with config defaults, but track live EMA separately
         self.profiles = {
-            "high_fidelity": {"decode_tps": settings.tps_high_fidelity},
-            "balanced": {"decode_tps": settings.tps_balanced},
-            "aggressive_quant": {"decode_tps": settings.tps_aggressive_quant}
+            "high_fidelity": {"decode_tps": settings.tps_high_fidelity, "live_tps": settings.tps_high_fidelity},
+            "balanced": {"decode_tps": settings.tps_balanced, "live_tps": settings.tps_balanced},
+            "aggressive_quant": {"decode_tps": settings.tps_aggressive_quant, "live_tps": settings.tps_aggressive_quant}
         }
+
+    def update_profile(self, mode: str, measured_tps: float):
+        """Feeds live generation metrics back into the Gatekeeper's math with strict clamping."""
+        if mode not in self.profiles or measured_tps <= 0:
+            return
+            
+        current_ema = self.profiles[mode]["live_tps"]
+        
+        # Calculate raw EMA
+        raw_ema = (measured_tps * settings.telemetry_alpha) + (current_ema * (1.0 - settings.telemetry_alpha))
+        
+        # Clamp the result to prevent transient anomalies from breaking the logic
+        clamped_ema = max(settings.tps_min_clamp, min(settings.tps_max_clamp, raw_ema))
+        
+        self.profiles[mode]["live_tps"] = clamped_ema
+        
+        print(f"[Gatekeeper] Telemetry updated for '{mode}': {measured_tps:.2f} t/s -> EMA: {clamped_ema:.2f} t/s")
 
     def evaluate_swap(self, current_mode: str, target_mode: str, context_tokens: int, expected_output: int) -> bool:
         if current_mode == target_mode:
             return False 
+            
+        # ALWAYS use the live EMA for calculations
+        current_tps = self.profiles.get(current_mode, self.profiles["balanced"])["live_tps"]
+        target_tps = self.profiles.get(target_mode, self.profiles["balanced"])["live_tps"]
+        
+        time_to_stay = expected_output / current_tps
+        
+        state_io_penalty = settings.state_io_base_seconds + (context_tokens * settings.state_io_per_token_seconds)
+        target_generation_time = expected_output / target_tps
+        
+        time_to_swap = self.swap_penalty_seconds + state_io_penalty + target_generation_time
+        
+        print(f"\n[Gatekeeper] Evaluation Request: {current_mode.upper()} -> {target_mode.upper()}")
+        print(f" -> Active Context size: {context_tokens} tokens | Anticipated Output: {expected_output} tokens")
+        print(f" -> Live TPS baselines - Current: {current_tps:.2f} t/s | Target: {target_tps:.2f} t/s")
+        print(f" -> Estimated time to STAY: {time_to_stay:.2f}s")
+        print(f" -> Estimated time to SWAP: {time_to_swap:.2f}s")
+        
+        if time_to_swap >= time_to_stay:
+            print(" -> [REJECTED] Swap canceled. Latency deficit exceeds throughput dividend.")
+            return False
+            
+        print(" -> [APPROVED] Hardware swap initiated.")
+        return True
             
         current = self.profiles.get(current_mode, self.profiles["balanced"])
         target = self.profiles.get(target_mode, self.profiles["balanced"])
@@ -239,14 +282,19 @@ async def generate_text(payload: GenerationPayload):
     else:
         if hardware_engine.current_strategy != active_mode:
             exact_prompt_tokens = hardware_engine.count_tokens(payload.prompt)
-            print(f"[API] JIT Tokenizer verification: Generation prompt measured at {exact_prompt_tokens} tokens.")
-            
-            is_profitable = gatekeeper.evaluate_swap(
-                current_mode=current_strategy,
-                target_mode=active_mode,
-                context_tokens=exact_prompt_tokens,
-                expected_output=payload.max_tokens
-            )
+            print(f"[API] Engaging hardware layers under '{active_mode}' strategy constraints...")
+        output = hardware_engine.generate(prompt=payload.prompt, max_tokens=payload.max_tokens)
+        
+        # --- CLOSE THE FEEDBACK LOOP ---
+        measured_tps = output["metrics"].get("tokens_per_second", 0)
+        if measured_tps > 0:
+            gatekeeper.update_profile(active_mode, measured_tps)
+        
+        return {
+            "text": output["text"],
+            "metrics": output["metrics"],
+            "hardware_engaged": True
+        }
             
             if is_profitable:
                 hardware_engine.apply_strategy(active_mode)
