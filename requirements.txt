@@ -19,4 +19,4 @@ openai>=1.14.0
 requests>=2.31.0
 
 # Mathematical Modeling & Simulation (Locked <2.0.0 to prevent C-API breakage)
-numpy>=1.26.0,<2.0.0
+numpy>=1.26.0,<2.0.0psutil==7.2.2
