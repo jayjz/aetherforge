@@ -32,26 +32,41 @@ class MockAetherEngine:
         """Approximates token count (roughly 4 chars per token)."""
         return max(1, len(text) // 4)
 
-    def apply_strategy(self, mode: str) -> bool:
-        """Simulates the physical VRAM Fast-Swap penalty."""
+    def apply_strategy(self, mode: str) -> Dict[str, Any]:
+        """Simulates the physical VRAM Fast-Swap penalty and returns telemetry metrics."""
+        # The expected return structure
+        metrics = {"extract_seconds": 0.0, "reload_seconds": 0.0, "inject_seconds": 0.0}
+        
         if mode not in self.tps_map:
             print(f"[MockEngine] Invalid strategy '{mode}'. Defaulting to balanced.")
             mode = "balanced"
             
         if mode == self.current_strategy:
-            return True # No-op
+            return {"success": True, "metrics": metrics} # No-op
             
         print(f"\n[MockEngine] SIMULATED HARDWARE OVERRIDE INITIATED.")
         print(f" -> Shifting from '{self.current_strategy}' to '{mode}'.")
         
-        # Simulate the state extraction, teardown, rebuild, and injection
-        simulated_swap_time = settings.swap_penalty_seconds
-        print(f" -> [Simulation] Emulating {simulated_swap_time}s physical swap...")
-        time.sleep(simulated_swap_time) 
+        # 1. Simulate Extraction
+        mock_extract = settings.state_io_base_seconds * 0.5
+        time.sleep(mock_extract)
+        metrics["extract_seconds"] = mock_extract
+        
+        # 2. Simulate Reload
+        mock_reload = settings.swap_penalty_seconds
+        print(f" -> [Simulation] Emulating {mock_reload}s physical model reload...")
+        time.sleep(mock_reload)
+        metrics["reload_seconds"] = mock_reload
+        
+        # 3. Simulate Injection
+        mock_inject = settings.state_io_base_seconds * 0.5
+        time.sleep(mock_inject)
+        metrics["inject_seconds"] = mock_inject
         
         self.current_strategy = mode
         print(f"[MockEngine] Simulated Fast-Swap Protocol Complete.")
-        return True
+        
+        return {"success": True, "metrics": metrics}
 
     def generate(self, prompt: str, max_tokens: int = 100) -> Dict[str, Any]:
         """Simulates token generation constrained by the active strategy's TPS limit."""

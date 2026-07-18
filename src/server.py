@@ -37,10 +37,12 @@ class HypervisorState:
 class EconomicGatekeeper:
     """
     Mathematically validates if a VRAM swap is profitable.
-    Uses Exponential Moving Average (EMA) to learn actual hardware speeds in real-time.
+    Learns throughput (TPS) and physical state serialization costs via EMA.
     """
     def __init__(self):
-        self.swap_penalty_seconds = settings.swap_penalty_seconds 
+        # We start with the calibrated defaults from settings, but learn live values
+        self.live_swap_penalty = settings.swap_penalty_seconds 
+        self.live_io_penalty = settings.state_io_base_seconds
         self.alpha = settings.telemetry_alpha
 
         self.profiles = {
@@ -48,6 +50,15 @@ class EconomicGatekeeper:
             "balanced": {"decode_tps": settings.tps_balanced, "live_tps": settings.tps_balanced},
             "aggressive_quant": {"decode_tps": settings.tps_aggressive_quant, "live_tps": settings.tps_aggressive_quant}
         }
+
+    def update_hardware_latencies(self, physical_swap_seconds: float, io_seconds: float):
+        """Updates the learned base cost of moving data across buses."""
+        if physical_swap_seconds > 0:
+            self.live_swap_penalty = (physical_swap_seconds * self.alpha) + (self.live_swap_penalty * (1.0 - self.alpha))
+        if io_seconds > 0:
+            self.live_io_penalty = (io_seconds * self.alpha) + (self.live_io_penalty * (1.0 - self.alpha))
+            
+        print(f"[Gatekeeper] Telemetry updated -> Learned Swap: {self.live_swap_penalty:.2f}s | Learned IO: {self.live_io_penalty:.2f}s")
 
     def update_profile(self, mode: str, measured_tps: float):
         if mode not in self.profiles or measured_tps <= 0:
@@ -65,14 +76,17 @@ class EconomicGatekeeper:
         target_tps = self.profiles.get(target_mode, self.profiles["balanced"])["live_tps"]
         
         time_to_stay = expected_output / current_tps
-        state_io_penalty = settings.state_io_base_seconds + (context_tokens * settings.state_io_per_token_seconds)
+        
+        # --- NO MORE GUESSING ---
+        # Uses the dynamically learned base IO penalty + scaling token multiplier
+        state_io_overhead = self.live_io_penalty + (context_tokens * settings.state_io_per_token_seconds)
         target_generation_time = expected_output / target_tps
         
-        time_to_swap = self.swap_penalty_seconds + state_io_penalty + target_generation_time
+        time_to_swap = self.live_swap_penalty + state_io_overhead + target_generation_time
         
         print(f"\n[Gatekeeper] Evaluation Request: {current_mode.upper()} -> {target_mode.upper()}")
         print(f" -> Active Context size: {context_tokens} tokens | Anticipated Output: {expected_output} tokens")
-        print(f" -> Live TPS baselines - Current: {current_tps:.2f} t/s | Target: {target_tps:.2f} t/s")
+        print(f" -> Live Cost Baselines - Swap Penalty: {self.live_swap_penalty:.2f}s | Base IO: {self.live_io_penalty:.2f}s")
         print(f" -> Estimated time to STAY: {time_to_stay:.2f}s")
         print(f" -> Estimated time to SWAP: {time_to_swap:.2f}s")
         
@@ -81,7 +95,6 @@ class EconomicGatekeeper:
             return False
         print(" -> [APPROVED] Hardware swap initiated.")
         return True
-
 
 # --- 2. STATE-AWARE LIFESPAN ---
 @asynccontextmanager
@@ -209,7 +222,6 @@ async def update_strategy(payload: StrategyPayload, request: Request):
     state = request.app.state.hypervisor
     target_mode = payload.mode.lower()
     
-    # Enforce atomic swap isolation to defeat concurrent collision
     async with state.lock:
         context_size = payload.estimated_context_tokens
         if payload.context_text:
@@ -232,9 +244,32 @@ async def update_strategy(payload: StrategyPayload, request: Request):
         
         print(f"\n[API] OVERRIDE: Gatekeeper approved strategy swap -> {target_mode.upper()}")
         state.current_strategy = target_mode
-        success = state.hardware_engine.apply_strategy(state.current_strategy)
+        
+        # Execute swap and capture actual wall-clock metrics
+        result = state.hardware_engine.apply_strategy(state.current_strategy)
+        
+        # Support handling dictionary returns from real engine or old booleans from stub configurations
+        if isinstance(result, dict):
+            success = result.get("success", False)
+            swap_metrics = result.get("metrics", {})
+        else:
+            success = result
+            swap_metrics = {}
+            
         if not success:
             raise HTTPException(status_code=500, detail="Failed to apply hardware strategy.")
+            
+        # Extract empirical serialization overheads
+        # Total IO penalty = time to save the old state + time to load into the new layout
+        io_total = swap_metrics.get("extract_seconds", 0.0) + swap_metrics.get("inject_seconds", 0.0)
+        reload_total = swap_metrics.get("reload_seconds", 0.0)
+        
+        # Feed actual measured hardware time straight back into the learning engine
+        if io_total > 0 or reload_total > 0:
+            state.gatekeeper.update_hardware_latencies(
+                physical_swap_seconds=reload_total, 
+                io_seconds=io_total
+            )
             
         return {"status": "strategy_applied", "active_mode": state.current_strategy}
 

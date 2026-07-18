@@ -55,85 +55,41 @@ class AetherEngine:
         tokens = self.llm.tokenize(text.encode('utf-8'))
         return len(tokens)
 
-    def apply_strategy(self, mode: str) -> bool:
+    def apply_strategy(self, mode: str) -> dict:
         """
-        Executes the Fast-Swap protocol with State Serialization. 
-        Extracts KV-Cache, reallocates VRAM boundaries, and restores memory.
+        Executes a Fast-Swap protocol by extracting the active state,
+        tearing down the model constraints, and re-allocating VRAM layers.
         """
-        if mode not in self.strategy_map:
-            print(f"[Engine] Invalid strategy '{mode}'. Defaulting to balanced.")
-            mode = "balanced"
+        metrics = {"extract_seconds": 0.0, "reload_seconds": 0.0, "inject_seconds": 0.0}
+        
+        if mode == self.current_strategy and self.llm is not None:
+            return {"success": True, "metrics": metrics}
             
-        if mode == self.current_strategy:
-            return True # No-op, already in correct state
+        print(f"[Engine] Commencing physical hardware shift to '{mode}'...")
+        
+        # 1. Measure KV Extraction / Serialization to System RAM
+        if self.llm is not None:
+            t_start_extract = time.perf_counter()
+            # Under the hood llama-cpp-python state extraction
+            raw_state = self.llm.save_state() 
+            metrics["extract_seconds"] = time.perf_counter() - t_start_extract
             
-        target_layers = self.strategy_map[mode]
-        print(f"\n[Engine] HARDWARE OVERRIDE INITIATED.")
-        print(f" -> Shifting from '{self.current_strategy}' to '{mode}'.")
-        print(f" -> Reallocating VRAM for {target_layers} layers...")
+            # Wipe state to free VRAM before reload
+            del self.llm
+            import gc
+            gc.collect()
+            
+        # 2. Measure Model Reload & Layout Re-allocation Time
+        t_start_reload = time.perf_counter()
+        target_layers = self._map_mode_to_layers(mode)
+        self._load_model(target_layers) # Your internal llama_context builder
+        metrics["reload_seconds"] = time.perf_counter() - t_start_reload
         
-        start_time = time.time()
-        
-        # 1. KV-Cache Extraction
-        saved_state = None
-        if self.llm:
-            try:
-                print("[Engine] Serializing active KV-Cache to System RAM...")
-                state_start = time.time()
-                saved_state = self.llm.save_state()
-                print(f" -> Extraction complete in {time.time() - state_start:.2f}s")
-            except Exception as e:
-                print(f"[!] WARNING: State extraction failed: {e}. Proceeding with cold restart.")
-        
-        # 2. Hardware Teardown
-        del self.llm
-        gc.collect()
-        
-        # 3. Hardware Rebuild
-        self._load_model(target_layers)
-        
-        # 4. KV-Cache Injection
-        if saved_state:
-            try:
-                print("[Engine] Injecting KV-Cache into new VRAM layout...")
-                restore_start = time.time()
-                self.llm.load_state(saved_state)
-                print(f" -> Injection complete in {time.time() - restore_start:.2f}s")
-            except Exception as e:
-                print(f"[CRITICAL] KV-Cache restoration failed: {e}. Memory wiped.")
-        
-        swap_time = time.time() - start_time
-        self.current_strategy = mode
-        
-        print(f"[Engine] Fast-Swap Protocol Complete in {swap_time:.2f}s.")
-        return True
+        # 3. Measure KV Injection Time into the new VRAM topology
+        if 'raw_state' in locals():
+            t_start_inject = time.perf_counter()
+            self.llm.load_state(raw_state)
+            metrics["inject_seconds"] = time.perf_counter() - t_start_inject
 
-    def generate(self, prompt: str, max_tokens: int = 100) -> Dict[str, Any]:
-        """Executes inference using the currently active memory profile."""
-        print(f"\n[Engine] Commencing generation (Mode: {self.current_strategy.upper()})...")
-        
-        start_time = time.time()
-        
-        output = self.llm(
-            prompt,
-            max_tokens=max_tokens,
-            temperature=0.7,
-            echo=False
-        )
-        
-        generation_time = time.time() - start_time
-        tokens_generated = output['usage']['completion_tokens']
-        tps = tokens_generated / generation_time if generation_time > 0 else 0
-        
-        print(f" -> Time taken: {generation_time:.2f}s")
-        print(f" -> Speed: {tps:.2f} tokens/sec")
-        
-        return {
-            "text": output['choices'][0]['text'],
-            "metrics": {
-                "tokens_generated": tokens_generated,
-                "time_seconds": generation_time,
-                "tokens_per_second": tps,
-                "active_strategy": self.current_strategy
-            }
-        }
+        self.current_strategy = mode
+        return {"success": True, "metrics": metrics}
