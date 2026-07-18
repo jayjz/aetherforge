@@ -1,0 +1,32 @@
+name: AetherForge Core CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-control-plane:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-node: '3.11'
+
+    - name: Install System Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest
+
+    - name: Install AetherForge Stack
+      # We skip compiling the heavy CUDA bindings for cloud unit tests
+      run: pip install -r requirements.txt
+
+    - name: Run Hypervisor Tests
+      run: pytest tests/
