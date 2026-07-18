@@ -32,18 +32,20 @@ def check_hypervisor_metrics() -> str:
         return f"Failed to reach hypervisor: {e}"
 
 @tool
-def optimize_vram_strategy(mode: str, expected_output_tokens: int) -> str:
+def optimize_vram_strategy(mode: str, expected_output_tokens: int, conversation_history: str) -> str:
     """
     Call this to reallocate hardware VRAM before heavy tasks.
-    Modes: 
-    - 'high_fidelity': For dense coding, logic, and deep reasoning.
-    - 'balanced': For standard chat and routing.
-    - 'aggressive_quant': For summarization to clear VRAM.
+    
+    Args:
+        mode: 'high_fidelity' (coding/reasoning), 'balanced' (chat), or 'aggressive_quant' (summarization).
+        expected_output_tokens: Estimated number of tokens the upcoming generation will require.
+        conversation_history: The exact raw prompt or text history. Pass this to ensure exact token counting.
     """
     payload = {
         "mode": mode,
-        "estimated_context_tokens": 500, # Hardcoded for showcase simplicity
-        "expected_output_tokens": expected_output_tokens
+        "estimated_context_tokens": 0,  # Bypassed by tokenizer override
+        "expected_output_tokens": expected_output_tokens,
+        "context_text": conversation_history
     }
     try:
         response = requests.post(f"{AETHERFORGE_URL}/system/strategy", json=payload)
@@ -53,8 +55,6 @@ def optimize_vram_strategy(mode: str, expected_output_tokens: int) -> str:
         return f"Hardware Fast-Swap successful. Now operating in {result.get('active_mode').upper()} mode."
     except Exception as e:
         return f"Hardware exception: {e}"
-
-tools = [check_hypervisor_metrics, optimize_vram_strategy]
 
 # --- 2. BUILD THE LANGGRAPH AGENT ---
 
