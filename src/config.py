@@ -29,10 +29,16 @@ class AetherSettings(BaseSettings):
     swap_penalty_seconds: float = Field(default=5.8, ge=0.0, description="Base time in seconds to perform a Fast-Swap.")
     state_io_base_seconds: float = Field(default=0.5, ge=0.0, description="Base IO overhead for memory serialization.")
     state_io_per_token_seconds: float = Field(default=0.0001, ge=0.0, description="RAM IO scaling factor per token.")
-    # Gatekeeper Live Telemetry
+    
+    # Gatekeeper Live Telemetry & Safety Guards
     telemetry_alpha: float = Field(default=0.3, ge=0.0, le=1.0, description="EMA smoothing factor.")
     tps_min_clamp: float = Field(default=2.0, description="Absolute minimum TPS floor to prevent death spirals.")
     tps_max_clamp: float = Field(default=60.0, description="Absolute maximum TPS ceiling.")
+    
+    # Hardware Safety Guards
+    max_safe_context_tokens: int = Field(default=8192, description="Absolute ceiling for context tokens.")
+    max_gpu_temp_c: int = Field(default=80, description="Thermal kill switch ceiling in Celsius.")
+    max_vram_allocation_pct: float = Field(default=95.0, description="Maximum allowable physical VRAM fragmentation.")
 
     tps_high_fidelity: float = Field(default=23.71, gt=0.0, description="Estimated decode speed for high_fidelity.")
     tps_balanced: float = Field(default=11.10, gt=0.0, description="Estimated decode speed for balanced.")

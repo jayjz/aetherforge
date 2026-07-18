@@ -17,6 +17,54 @@ except ImportError:
 
 from src.mock_engine import MockAetherEngine
 
+# --- OPTIONAL DEFENSIBLY LOADED NVML TOOLING ---
+try:
+    import pynvml
+    HAS_NVML = True
+except ImportError:
+    HAS_NVML = False
+
+
+class HardwareMonitor:
+    """
+    Reads physical hardware vitals using NVIDIA Management Library.
+    Degrades gracefully to safe simulated modes if missing or on headless targets.
+    """
+    def __init__(self):
+        self.active = False
+        if HAS_NVML:
+            try:
+                pynvml.nvmlInit()
+                # Targets primary consumer GPU instance (RTX 4060)
+                self.handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                self.active = True
+                print("[HardwareMonitor] NVML hardware bindings successfully mapped. Silicon telemetry active.")
+            except Exception as e:
+                print(f"[HardwareMonitor] NVML initialization bypassed: {e}. Running simulation fallback.")
+        else:
+            print("[HardwareMonitor] nvidia-ml-py library absent. Running simulation fallback.")
+
+    def get_vitals(self) -> Dict[str, Any]:
+        if not self.active:
+            return {"temp_c": 0, "vram_pct": 0.0, "status": "simulated"}
+        try:
+            temp = pynvml.nvmlDeviceGetTemperature(self.handle, pynvml.NVML_TEMPERATURE_GPU)
+            mem_info = pynvml.nvmlDeviceGetMemoryInfo(self.handle)
+            vram_pct = (mem_info.used / mem_info.total) * 100.0
+            return {"temp_c": temp, "vram_pct": vram_pct, "status": "online"}
+        except Exception as e:
+            print(f"[HardwareMonitor] Silicon polling telemetry interrupt: {e}")
+            return {"temp_c": 0, "vram_pct": 0.0, "status": "error"}
+
+    def shutdown(self):
+        if self.active:
+            try:
+                pynvml.nvmlShutdown()
+                print("[HardwareMonitor] NVML resource contexts cleanly unmapped.")
+            except:
+                pass
+
+
 # --- 1. HARDENED STATE CONTAINER ---
 class HypervisorState:
     """
@@ -29,6 +77,7 @@ class HypervisorState:
             ram_budget_mb=settings.ram_budget_mb
         )
         self.gatekeeper = EconomicGatekeeper()
+        self.hardware_monitor = HardwareMonitor()
         self.hardware_engine = None
         self.current_strategy = "balanced"
         self.lock = asyncio.Lock()  # Prevents overlapping hardware swaps during concurrent agent calls
@@ -72,12 +121,18 @@ class EconomicGatekeeper:
     def evaluate_swap(self, current_mode: str, target_mode: str, context_tokens: int, expected_output: int) -> bool:
         if current_mode == target_mode:
             return False 
+
+        # --- HARDWARE SAFETY GUARD ---
+        if context_tokens > settings.max_safe_context_tokens:
+            print(f" -> [REJECTED - SAFETY GUARD] Context size ({context_tokens}) exceeds max safe swap limit ({settings.max_safe_context_tokens}).")
+            print(" -> Preventing catastrophic VRAM thrash/OOM. Forcing active state execution.")
+            return False
+
         current_tps = self.profiles.get(current_mode, self.profiles["balanced"])["live_tps"]
         target_tps = self.profiles.get(target_mode, self.profiles["balanced"])["live_tps"]
         
         time_to_stay = expected_output / current_tps
         
-        # --- NO MORE GUESSING ---
         # Uses the dynamically learned base IO penalty + scaling token multiplier
         state_io_overhead = self.live_io_penalty + (context_tokens * settings.state_io_per_token_seconds)
         target_generation_time = expected_output / target_tps
@@ -136,6 +191,7 @@ async def lifespan(app: FastAPI):
         
     yield
     print("\n[API] Shutting down AetherForge Control Plane...")
+    state.hardware_monitor.shutdown()
 
 app = FastAPI(title="AetherForge Hypervisor API", version="0.4.2", lifespan=lifespan)
 
@@ -192,6 +248,7 @@ async def get_metrics(request: Request):
             "budget_mb": state.cache_manager.vram_budget_mb,
             "utilization_pct": (state.cache_manager.current_vram_usage / state.cache_manager.vram_budget_mb) * 100
         },
+        "silicon_vitals": state.hardware_monitor.get_vitals(),
         "performance_baselines": gatekeeper_telemetry,
         "engine_state": "online" if HAS_ENGINE else "simulation"
     }
@@ -223,6 +280,14 @@ async def update_strategy(payload: StrategyPayload, request: Request):
     target_mode = payload.mode.lower()
     
     async with state.lock:
+        # Prevent hardware strategy execution if the machine is running too hot
+        vitals = state.hardware_monitor.get_vitals()
+        if vitals["status"] == "online":
+            if vitals["temp_c"] >= settings.max_gpu_temp_c:
+                raise HTTPException(status_code=503, detail="Strategy modification aborted: Hardware thermal ceiling exceeded.")
+            if vitals["vram_pct"] >= settings.max_vram_allocation_pct:
+                raise HTTPException(status_code=503, detail="Strategy modification aborted: Critical hardware VRAM pressure limit reached.")
+
         context_size = payload.estimated_context_tokens
         if payload.context_text:
             context_size = state.hardware_engine.count_tokens(payload.context_text)
@@ -260,11 +325,9 @@ async def update_strategy(payload: StrategyPayload, request: Request):
             raise HTTPException(status_code=500, detail="Failed to apply hardware strategy.")
             
         # Extract empirical serialization overheads
-        # Total IO penalty = time to save the old state + time to load into the new layout
         io_total = swap_metrics.get("extract_seconds", 0.0) + swap_metrics.get("inject_seconds", 0.0)
         reload_total = swap_metrics.get("reload_seconds", 0.0)
         
-        # Feed actual measured hardware time straight back into the learning engine
         if io_total > 0 or reload_total > 0:
             state.gatekeeper.update_hardware_latencies(
                 physical_swap_seconds=reload_total, 
@@ -276,11 +339,30 @@ async def update_strategy(payload: StrategyPayload, request: Request):
 @app.post("/generate")
 async def generate_text(payload: GenerationPayload, request: Request):
     state = request.app.state.hypervisor
+    
+    # --- 1. PROACTIVE PREFLIGHT: Guard the engine context from heavy ingest loads ---
+    exact_prompt_tokens = state.hardware_engine.count_tokens(payload.prompt)
+    if exact_prompt_tokens > settings.max_safe_context_tokens:
+        print(f"[PREFLIGHT FAILED] Agent execution rejected. {exact_prompt_tokens} tokens exceeds absolute ceiling of {settings.max_safe_context_tokens}.")
+        raise HTTPException(
+            status_code=413, 
+            detail=f"Context payload size ({exact_prompt_tokens} tokens) violates the active hardware safety ceiling ({settings.max_safe_context_tokens} tokens)."
+        )
+
+    # --- 2. PROACTIVE PREFLIGHT: Assert silicon safety profiles before computation ---
+    vitals = state.hardware_monitor.get_vitals()
+    if vitals["status"] == "online":
+        if vitals["temp_c"] >= settings.max_gpu_temp_c:
+            print(f"[THERMAL OVERFLOW] Execution aborted. GPU Temp at {vitals['temp_c']}°C exceeds boundary ({settings.max_gpu_temp_c}°C).")
+            raise HTTPException(status_code=503, detail="Generation rejected: Hardware thermal threshold exceeded. Backing off.")
+        if vitals["vram_pct"] >= settings.max_vram_allocation_pct:
+            print(f"[VRAM OVERFLOW] Execution aborted. Active footprint at {vitals['vram_pct']:.2f}% exceeds boundary ({settings.max_vram_allocation_pct}%).")
+            raise HTTPException(status_code=503, detail="Generation rejected: Insufficient VRAM structural headroom to proceed safely.")
+
     active_mode = payload.strategy.mode if payload.strategy else state.current_strategy
 
     async with state.lock:
         if state.hardware_engine.current_strategy != active_mode:
-            exact_prompt_tokens = state.hardware_engine.count_tokens(payload.prompt)
             print(f"[API] JIT Tokenizer verification: Generation prompt measured at {exact_prompt_tokens} tokens.")
             
             is_profitable = state.gatekeeper.evaluate_swap(
@@ -309,4 +391,4 @@ async def generate_text(payload: GenerationPayload, request: Request):
         "text": output["text"],
         "metrics": output["metrics"],
         "hardware_engaged": HAS_ENGINE
-    }
+    }e been doing long-
