@@ -8,14 +8,7 @@ from typing import List, Optional, Dict, Any
 
 from src.cache_manager import AetherCacheManager
 from src.config import settings
-
-try:
-    from src.inference_engine import AetherEngine
-    HAS_ENGINE = True
-except ImportError:
-    HAS_ENGINE = False
-
-from src.mock_engine import MockAetherEngine
+from src.engines import create_engine
 
 # --- OPTIONAL DEFENSIBLY LOADED NVML TOOLING ---
 try:
@@ -80,6 +73,7 @@ class HypervisorState:
         self.hardware_monitor = HardwareMonitor()
         self.hardware_engine = None
         self.current_strategy = "balanced"
+        self.is_simulated = True  # Defaults to true, overridden by lifespan factory
         self.lock = asyncio.Lock()  # Prevents overlapping hardware swaps during concurrent agent calls
 
 
@@ -164,36 +158,26 @@ async def lifespan(app: FastAPI):
     if os.path.exists(topo_path):
         state.cache_manager.load_topology(topo_path)
 
-    if not os.path.exists(settings.model_path) and HAS_ENGINE:
-        critical_msg = f"[CRITICAL ERROR] Model file not found at: '{settings.model_path}'"
-        print(critical_msg)
-        raise FileNotFoundError(critical_msg)
+    # Determine target engine (Llama physical vs Headless Mock)
+    target_engine = "llama" if os.path.exists(settings.model_path) else "mock"
     
-    if HAS_ENGINE and os.path.exists(settings.model_path):
-        try:
-            print(f"[API] Hardware Engine active. Targeting model: {settings.model_path}")
-            state.hardware_engine = AetherEngine(
-                model_path=settings.model_path, 
-                vram_budget_mb=settings.vram_budget_mb,
-                n_ctx=settings.n_ctx
-            )
-        except Exception as e:
-            print(f"[API] Fatal initialization crash on CUDA layer: {e}")
-            raise RuntimeError(f"Hardware initialization failed: {e}")
-    else:
-        print("[API] WARNING: CUDA engine missing or model not found.")
-        print("[API] Falling back to MockAetherEngine. Operating in headless simulation mode.")
-        state.hardware_engine = MockAetherEngine(
+    try:
+        state.hardware_engine = create_engine(
+            engine_type=target_engine,
             model_path=settings.model_path,
             vram_budget_mb=settings.vram_budget_mb,
             n_ctx=settings.n_ctx
         )
+        state.is_simulated = state.hardware_engine.__class__.__name__ == "MockAetherEngine"
+    except Exception as e:
+        print(f"[API] Fatal Engine Factory crash: {e}")
+        raise RuntimeError(f"Hypervisor engine initialization failed: {e}")
         
     yield
     print("\n[API] Shutting down AetherForge Control Plane...")
     state.hardware_monitor.shutdown()
 
-app = FastAPI(title="AetherForge Hypervisor API", version="0.4.2", lifespan=lifespan)
+app = FastAPI(title="AetherForge Hypervisor API", version="0.5.0", lifespan=lifespan)
 
 
 # --- PYDANTIC SCHEMAS ---
@@ -220,13 +204,13 @@ async def get_cache_status(request: Request):
     vram_experts = [e.expert_id for e in state.cache_manager.experts.values() if e.location == "VRAM"]
     
     return {
-        "status": "online" if HAS_ENGINE else "simulation",
+        "status": "simulation" if state.is_simulated else "online",
         "current_step": state.cache_manager.current_step,
         "vram_budget_mb": state.cache_manager.vram_budget_mb,
         "current_vram_usage_mb": state.cache_manager.current_vram_usage,
         "active_experts_in_vram": vram_experts,
         "active_strategy": state.hardware_engine.current_strategy,
-        "engine_available": HAS_ENGINE
+        "engine_available": not state.is_simulated
     }
 
 @app.get("/system/metrics")
@@ -250,7 +234,7 @@ async def get_metrics(request: Request):
         },
         "silicon_vitals": state.hardware_monitor.get_vitals(),
         "performance_baselines": gatekeeper_telemetry,
-        "engine_state": "online" if HAS_ENGINE else "simulation"
+        "engine_state": "simulation" if state.is_simulated else "online"
     }
 
 @app.get("/system/tools")
@@ -390,5 +374,5 @@ async def generate_text(payload: GenerationPayload, request: Request):
     return {
         "text": output["text"],
         "metrics": output["metrics"],
-        "hardware_engaged": HAS_ENGINE
-    }e been doing long-
+        "hardware_engaged": not state.is_simulated
+    }
