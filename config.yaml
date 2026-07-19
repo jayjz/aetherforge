@@ -1,0 +1,16 @@
+﻿max_gpu_temp_c: 75
+max_vram_allocation_pct: 90.0
+vram_budget_mb: 6000
+ram_budget_mb: 16000
+swap_penalty_seconds: 1.5
+state_io_base_seconds: 0.5
+telemetry_alpha: 0.2
+tps_high_fidelity: 25.0
+tps_balanced: 15.0
+tps_aggressive_quant: 8.0
+tps_min_clamp: 1.0
+tps_max_clamp: 100.0
+max_safe_context_tokens: 4096
+state_io_per_token_seconds: 0.0001
+model_path: ""
+n_ctx: 2048

@@ -12,7 +12,7 @@ from typing import Dict, Any
 from llama_cpp import Llama
 from src.config import settings
 
-class AetherEngine:
+class LlamaEngine:    
     def __init__(self, model_path: str, vram_budget_mb: float = 8000, n_ctx: int = 4096):
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model not found at {model_path}")
