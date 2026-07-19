@@ -1,90 +1,80 @@
 # PROJECTGUIDELINES.md — AetherForge
 
 **Living guidelines for architecture, decisions, and engineering standards.**  
-*Last updated: 2026-07-17*
+*Last updated: 2026-07-19*
 
-## 1. Vision & Current Reality
+## 1. Vision & Strategy
 
-**Vision**: Agent-aware memory hypervisor that lets local agents treat large MoE models as elastic resources on consumer hardware (8–16 GB VRAM + system RAM).
+**Vision**: AetherForge is the premier **agent-aware hypervisor** for elastic local MoE inference. It enables autonomous agents to dynamically manage VRAM/experts on consumer hardware (8–24 GB VRAM), minimizing prefill penalties and maximizing throughput for long-context, multi-step workflows.
 
-**Current production path** (what ships on `main`):
-- Controlled Fast-Swap via `n_gpu_layers` change
-- KV-cache serialization (`save_state` / `load_state`) so context survives
-- Economic Gatekeeper that rejects swaps whose latency cost exceeds expected benefit
-- OpenAI-compatible tool schema generated from Pydantic
-- FastAPI control plane
+**Core Differentiator**: Combines reliable control-plane orchestration (Economic Gatekeeper, strategy switching) with high-performance heterogeneous kernels (via ktransformers integration) and cutting-edge research (HOBBIT-inspired mixed-precision dynamic experts).
 
-True runtime expert-level tensor movement remains research until proven stable.
+**Integration Strategy**: 
+- Production: Fast-Swap + KV survival + Gatekeeper.
+- Accelerated: ktransformers CPU/GPU expert scheduling + FP8/AMX optimizations.
+- Research: Full HOBBIT-style token-level dynamic loading, prefetch, and multidimensional caching.
 
-**Primary success metrics (product-oriented)**:
-- A new user can install and run a strategy change with long context in < 15 minutes of setup.
-- Measurable reduction in prefill penalty for multi-step agent workloads vs static baselines.
-- Tool schema works with at least two major agent frameworks without custom glue.
-- No silent context loss or segfaults under normal use.
+**Primary Success Metrics (Product-Oriented)**:
+- New user installs and runs an agent-driven strategy/expert change in <10 minutes.
+- ≥2x effective agent throughput (prefill + decode) vs. static baselines on 8-16GB GPUs.
+- Seamless integration with ≥3 agent frameworks (LangGraph, CrewAI, SGLang).
+- 500+ GitHub stars within 6 months through usability and demonstrated value.
+- Zero critical bugs in production paths; measurable accuracy preservation in dynamic modes.
 
 ## 2. Architecture Principles
 
-1. **Reliability over cleverness** — Prefer a well-tested teardown + KV path over fragile ctypes experiments.
-2. **Control plane vs muscle** — Keep decision logic (Python) separate from execution (llama.cpp / future backends).
-3. **Agent-first** — Every capability should be discoverable and callable by an autonomous agent.
-4. **Config over code** — Hard-coded paths, layer counts, and thresholds are technical debt.
-5. **Honest observability** — Expose real measured costs, not just static tables.
+1. **Reliability & Agent-First** — Production paths prioritize stability and discoverability (OpenAI tool schemas, telemetry). Research only lands on `main` when stable/configurable.
+2. **Separation of Concerns** — Python control plane (decisions, Gatekeeper) vs. high-perf kernels (ktransformers/llama.cpp C++/CUDA).
+3. **Config-Driven & Observable** — All knobs in YAML/ENV. Real EMA telemetry over static tables.
+4. **Pragmatic Hybrid** — Leverage ktransformers for expert offload/scheduling; extend with HOBBIT techniques.
+5. **Usability & Reproducibility** — Docker-first, auto-detection, honest benchmarks, minimal source edits.
 
-## 3. Branching & Release Workflow
+## 3. Branching, Releases & Collaboration
 
-- `main` is always runnable.
-- Work on short-lived branches: `feat/`, `fix/`, `chore/`, `docs/`, `research/`.
-- Open a PR even when solo (self-review + permanent rationale).
-- Delete branches after merge.
-- Tag releases with semantic versioning (`v0.4.0` …).
-- Long-running speculative work stays on `research/*` and is periodically rebased or archived.
+- `main` always runnable and production-grade.
+- Short-lived branches: `feat/`, `fix/`, `chore/`, `docs/`, `research/`.
+- All changes via PR (self-review + rationale even solo). Conventional commits.
+- Semantic versioning + `CHANGELOG.md`. Tag meaningful releases.
+- Research on `research/*`; extract cleanly after validation.
+- **Contributors**: See `CONTRIBUTING.md`. Welcome issues/PRs. Maintainers triage promptly.
 
 ## 4. Coding & Quality Standards
 
-- Python 3.10+, type hints, Pydantic for all external interfaces.
-- No new hard-coded model paths or magic numbers. Use configuration.
-- Tests: unit tests for pure logic + the existing empirical scripts (KV, strategy, tool calling).
-- Conventional commits.
-- Update ROADMAP.md and this file in the same PR when phase status changes.
+- Python 3.10+ (control plane), type hints, Pydantic v2.
+- C++/CUDA for kernels (align with ktransformers style).
+- Comprehensive tests: unit + integration (empirical scripts) + CI (GitHub Actions).
+- No magic numbers/hard-coded paths. Full configuration.
+- Security: Input validation, resource limits, no untrusted model execution.
+- Documentation: Update README, ROADMAP, this file with every phase change.
 
-## 5. Decision Log (append-only)
+## 5. Decision Log (Append-Only)
 
-**2026-07-13** — Initial decisions: Python-first control plane on top of llama.cpp, focus on MoE, agent hooks early, RTX 4060 as primary target.
+**2026-07-19** — Adopted unified strategy: AetherForge as agent hypervisor leveraging ktransformers kernels + HOBBIT research. Prioritize packaging, integrations, and benchmarks for community traction.  
+**2026-07-17** — (Prior entries retained)...
 
-**2026-07-17** — Adopted teardown + KV serialization as the production Fast-Swap mechanism. True dynamic expert movement moved to research track. Schema generation made dynamic from Pydantic. Economic Gatekeeper made the authority for swap approval.
+## 6. Research References
 
-*(Add new dated entries here.)*
+- HOBBIT (arXiv:2411.01433): Mixed-precision dynamic loading, prefetch, caching.
+- ktransformers: Heterogeneous MoE scheduling, FP8, SGLang integration.
+- llama.cpp ecosystem & community experiments (expert cache, hybrid offload).
 
-## 6. Research References (kept for context)
+## 7. Testing, Benchmarking & Release Criteria
 
-- HOBBIT (arXiv:2411.01433) — mixed-precision expert offloading, importance scoring, prefetching.
-- llama.cpp `--n-cpu-moe` / `--override-tensor` — current practical hybrid MoE baseline.
-- Community hot-expert cache experiments and disk-paging PoCs.
+- Hardware disclosure mandatory in PRs/benchmarks.
+- Baselines: vanilla llama.cpp, static offload, prior versions.
+- Metrics: t/s (prefill/decode), swap/expert load latency, context fidelity, Gatekeeper decisions, accuracy (where applicable).
+- Before "production": Docker support, end-to-end agent examples, CI passing, updated docs.
 
-These inform the research track. They do not define the current production path.
+## 8. Packaging, Community & Portfolio Standards
 
-## 7. Testing & Benchmarking
+- Deliverables: Docker, pip, HF demos.
+- Community: Responsive issues, Discord/Reddit/X engagement, clear `CONTRIBUTING.md`.
+- Professionalism: Clean history, professional READMEs, reproducible benchmarks.
 
-- Always record hardware (GPU, VRAM, RAM, CUDA version).
-- Baselines: vanilla llama.cpp, static `--n-cpu-moe`, previous AetherForge version.
-- Metrics: swap latency, post-swap t/s, context survival, Gatekeeper accept/reject rate.
-- Prefer scripts that can be re-run by others.
+## 9. Open Risks & Mitigations
 
-## 8. Packaging & Usability Goals
+- Kernel maintenance (mitigate via upstream contributions).
+- Hardware fragmentation (auto-config + profiles).
+- Research instability (strict gating to main).
 
-Before calling anything “production”:
-- Configuration file or environment variables for all important knobs.
-- Clear README with known limitations.
-- Minimal reproducible example for agent integration.
-- No requirement to edit source code for normal use.
-
-## 9. Open Risks
-
-- Full model reload (even with KV restore) is still relatively expensive.
-- Reliance on llama-cpp-python behavior across versions.
-- Local models vary widely in tool-calling reliability.
-- True dynamic tensor movement may require a custom llama.cpp patch or fork.
-
----
-
-*This is a living document. Update it when reality changes.*
+*This is a living document. Update when reality changes.*
