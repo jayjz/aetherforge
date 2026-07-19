@@ -1,6 +1,5 @@
 # Dockerfile - Optimized for RTX 4060 + CUDA Toolkit Parity
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
-
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
 # Prevent interactive prompts blocking the build process
 ENV DEBIAN_FRONTEND=noninteractive
 
