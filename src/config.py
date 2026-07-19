@@ -3,6 +3,7 @@ AetherForge Configuration State
 ===============================
 Single source of truth for all hardware limits, file paths, and Gatekeeper 
 heuristics. Dynamically merges a local config.yaml file with environment overrides.
+Enforces strict fail-fast bounds to guarantee silicon safety.
 """
 
 import os
@@ -14,36 +15,40 @@ from typing import Dict, Any, Optional
 class AetherSettings(BaseSettings):
     # Hardware & Model Configuration
     model_path: str = Field(default="models/DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf")
-    vram_budget_mb: int = Field(default=8000)
-    ram_budget_mb: int = Field(default=32000)
-    n_ctx: int = Field(default=4096)
+    vram_budget_mb: int = Field(default=8000, gt=0)
+    ram_budget_mb: int = Field(default=32000, gt=0)
+    n_ctx: int = Field(default=8192, gt=0)
 
     # Strategy To GPU Layer Mapping 
-    layers_high_fidelity: int = Field(default=15)
-    layers_balanced: int = Field(default=10)
-    layers_aggressive_quant: int = Field(default=2)
+    layers_high_fidelity: int = Field(default=15, ge=0)
+    layers_balanced: int = Field(default=10, ge=0)
+    layers_aggressive_quant: int = Field(default=2, ge=0)
 
     # Gatekeeper Tuning & Heuristics
-    swap_penalty_seconds: float = Field(default=5.8)
-    state_io_base_seconds: float = Field(default=0.5)
-    state_io_per_token_seconds: float = Field(default=0.0001)
+    swap_penalty_seconds: float = Field(default=5.8, ge=0.0)
+    state_io_base_seconds: float = Field(default=0.5, ge=0.0)
+    state_io_per_token_seconds: float = Field(default=0.0001, ge=0.0)
     
-    # Gatekeeper Live Telemetry & Safety Guards
-    telemetry_alpha: float = Field(default=0.3)
-    tps_min_clamp: float = Field(default=2.0)
-    tps_max_clamp: float = Field(default=60.0)
-    max_safe_context_tokens: int = Field(default=8192)
-    max_gpu_temp_c: int = Field(default=80)
-    max_vram_allocation_pct: float = Field(default=95.0)
+    # Gatekeeper Live Telemetry & Clamping
+    telemetry_alpha: float = Field(default=0.3, ge=0.01, le=1.0)
+    tps_min_clamp: float = Field(default=2.0, ge=0.1)
+    tps_max_clamp: float = Field(default=60.0, le=200.0)
+
+    # --- ABSOLUTE HARDWARE KILL-SWITCH BOUNDS ---
+    # These limits are hard-coded to protect the 8GB RTX 4060. 
+    # Any yaml override outside these bounds will fatally crash the app on boot.
+    max_safe_context_tokens: int = Field(default=8192, le=32000)
+    max_gpu_temp_c: int = Field(default=75, ge=60, le=88)
+    max_vram_allocation_pct: float = Field(default=85.0, ge=50.0, le=98.0)
 
     # Performance Estimates
-    tps_high_fidelity: float = Field(default=23.71)
-    tps_balanced: float = Field(default=11.10)
-    tps_aggressive_quant: float = Field(default=12.10)
+    tps_high_fidelity: float = Field(default=23.71, gt=0)
+    tps_balanced: float = Field(default=11.10, gt=0)
+    tps_aggressive_quant: float = Field(default=12.10, gt=0)
 
     # Server Configuration
     api_host: str = Field(default="127.0.0.1")
-    api_port: int = Field(default=8000)
+    api_port: int = Field(default=8000, gt=0, le=65535)
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
