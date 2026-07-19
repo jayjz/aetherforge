@@ -1,85 +1,82 @@
 # 🗺️ AetherForge Roadmap
 
-**Last updated: 2026-07-17**
+**Last updated: 2026-07-19**
 
-AetherForge is an agent-aware memory hypervisor for local MoE inference on consumer hardware.  
-Current production path: controlled Fast-Swap (model reload with different layer counts) + KV-cache serialization + Economic Gatekeeper + OpenAI-compatible tool schema.
+AetherForge delivers agent-optimized elastic MoE inference by combining intelligent hypervisor control with high-performance heterogeneous kernels and dynamic expert research.
 
-We ship the reliable path first. True in-memory expert routing remains a research track.
-
----
-
-## Current Status (v0.3.x)
-
-**Working today**
-- [x] Control plane (FastAPI + Pydantic)
-- [x] Strategy modes (`high_fidelity` / `balanced` / `aggressive_quant`)
-- [x] KV-cache survival across Fast-Swaps
-- [x] Economic Gatekeeper (rejects unprofitable swaps)
-- [x] Dynamic OpenAI tool schema generation from Pydantic
-- [x] Minimal ReAct-style agent discovery test
-
-**Still hard-coded / fragile**
-- Model path, strategy → layer mapping, Gatekeeper numbers, `n_ctx`
-- No configuration system
-- Limited observability
-- Documentation lag
+**Unified Stack**: AetherForge (orchestration) + ktransformers (kernels) + HOBBIT techniques (dynamic experts).
 
 ---
 
-## Phase A — Production Hardening (Next, v0.4.0)
+## Current Status (v0.4.x)
 
-**Goal**: Make the current system something a stranger can clone, configure, and depend on.
+**Production (main)**:
+- [x] FastAPI control plane + Pydantic schemas.
+- [x] Strategy modes with Economic Gatekeeper + KV survival.
+- [x] Dynamic OpenAI tool schema.
+- [x] Basic ktransformers alignment hooks.
 
-- [ ] Configuration system (YAML/ENV) for model path, strategies, Gatekeeper thresholds, `n_ctx`, ports
-- [ ] Single source of truth for tool schema (already started) + client library consistency
-- [ ] Structured logging + basic metrics endpoint
-- [ ] Proper error handling and graceful degradation
-- [ ] Automated tests (unit + the existing empirical scripts) + minimal CI
-- [ ] Updated README with honest setup instructions and known limitations
-- [ ] Semantic versioning + CHANGELOG
-
-**Exit criteria**: A new user can install, point at their own GGUF, change strategies via the tool, and get reproducible behavior without editing source.
+**In Progress**: Configuration hardening, initial HOBBIT prototypes.
 
 ---
 
-## Phase B — Real Agent Integration (v0.5.0)
+## Phase 0: Foundation & Unification (v0.4.0 — Now)
 
-**Goal**: Prove value inside actual orchestrators.
+**Goal**: Production-ready base with ktransformers integration.
 
-- [ ] Clean LangGraph / CrewAI / n8n integration examples
-- [ ] Live measured t/s fed back into Gatekeeper (replace static numbers)
-- [ ] Optional MCP server surface
-- [ ] Telemetry usable by agents (current strategy, last swap cost, VRAM pressure)
+- [ ] Full YAML/ENV config system.
+- [ ] ktransformers kernel integration (expert scheduling, FP8/AMX).
+- [ ] Docker + one-click install.
+- [ ] Structured logging, metrics endpoint, auto hardware profiling.
+- [ ] CI/CD + basic unit/integration tests.
+- [ ] Updated docs + initial benchmarks.
 
-**Exit criteria**: At least one non-trivial agent loop demonstrably benefits from autonomous strategy changes with long context.
-
----
-
-## Phase C — Research Track (parallel, not blocking)
-
-**Goal**: Explore true dynamic expert movement and advanced caching.
-
-- [ ] Investigate / prototype hot-expert caching or runtime tensor movement (requires careful evaluation of llama.cpp / ggml-backend capabilities)
-- [ ] Mixed-precision expert handling (HOBBIT-inspired)
-- [ ] Asynchronous pre-fetch experiments
-- [ ] Cross-platform (MLX / Metal) exploration
-
-These live on `research/*` branches. Successful results are extracted cleanly into `main` only after they are stable and configurable.
+**Exit**: Stranger can `docker compose up` and run agent strategy changes reproducibly.
 
 ---
 
-## Later
+## Phase 1: Dynamic Experts & Agent Excellence (v0.5.0)
 
-- Multi-model orchestration
-- KV compression / relevance-based eviction
-- Packaging (pip, Docker)
-- Broader hardware profiles
+**Goal**: HOBBIT-powered runtime + proven agent value.
+
+- [ ] Token-level dynamic mixed-precision loading & prefetch (HOBBIT).
+- [ ] Multidimensional expert cache policy.
+- [ ] Live telemetry feedback to Gatekeeper.
+- [ ] Production-grade LangGraph/CrewAI/SGLang examples.
+- [ ] Extended benchmarks (consumer GPUs, agent workloads).
+
+**Exit**: Demonstrable 2-5x agent gains; community PRs welcomed.
 
 ---
 
-## Versioning Policy
+## Phase 2: Ecosystem & Scale (v0.6.0 — v1.0)
 
-- `0.x` = pre-1.0, breaking changes allowed with notes
-- Tag every meaningful release on `main`
-- Keep `main` always runnable
+**Goal**: Broad adoption.
+
+- [ ] Multi-model orchestration & relevance caching.
+- [ ] Packaging (PyPI, HF Space, LM Studio/Ollama plugins).
+- [ ] Cross-platform (ROCm, Metal via extensions).
+- [ ] Advanced agent features (persistent memory, self-evolution hooks).
+- [ ] Security audit + broader hardware profiles.
+
+**Exit**: v1.0 with 500+ stars, production users, upstream contributions.
+
+---
+
+## Later / Research
+
+- KV compression, disk-tier caching.
+- Full custom llama.cpp fork (if needed).
+- Fine-tuning integration (LLaMA-Factory via ktransformers).
+- Cloud-hybrid fallback.
+
+---
+
+## Versioning & Release Policy
+
+- `0.x`: Iterative, breaking changes documented.
+- `1.0+`: Strict semantic versioning.
+- `main` always runnable. Tag on meaningful milestones.
+- Maintain `CHANGELOG.md` and update portfolio-friendly READMEs.
+
+*Focus: Deliver usable value quickly while building toward industry-leading local agent infrastructure.*
