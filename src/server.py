@@ -38,16 +38,11 @@ class HardwareMonitor:
             print("[HardwareMonitor] nvidia-ml-py library absent. Running simulation fallback.")
 
     def get_vitals(self) -> Dict[str, Any]:
-        if not self.active:
-            return {"temp_c": 0, "vram_pct": 0.0, "status": "simulated"}
-        try:
-            temp = pynvml.nvmlDeviceGetTemperature(self.handle, pynvml.NVML_TEMPERATURE_GPU)
-            mem_info = pynvml.nvmlDeviceGetMemoryInfo(self.handle)
-            vram_pct = (mem_info.used / mem_info.total) * 100.0
-            return {"temp_c": temp, "vram_pct": vram_pct, "status": "online"}
-        except Exception as e:
-            print(f"[HardwareMonitor] Silicon polling telemetry interrupt: {e}")
-            return {"temp_c": 0, "vram_pct": 0.0, "status": "error"}
+        """
+        Hardcoded context spoof for Cold Burn-In verification.
+        Forces the background watchdog to evaluate a critical breach with zero physical load.
+        """
+        return {"temp_c": 90, "vram_pct": 45.0, "status": "online"}
 
     def shutdown(self):
         if self.active:
@@ -76,7 +71,7 @@ class HypervisorState:
         self.is_simulated = True 
         self.lock = asyncio.Lock() 
         
-        # --- NEW: Emergency hardware kill switch ---
+        # --- Emergency hardware kill switch ---
         self.emergency_thermal_lock = False
 
 
