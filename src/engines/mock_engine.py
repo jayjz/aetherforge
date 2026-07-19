@@ -9,8 +9,9 @@ the configuration file, allowing full Control Plane testing without a GPU.
 import time
 from typing import Dict, Any
 from src.config import settings
+from src.engines.base import BaseAetherEngine
 
-class MockAetherEngine:
+class MockAetherEngine(BaseAetherEngine):
     def __init__(self, model_path: str, vram_budget_mb: float = 8000, n_ctx: int = 4096):
         self.model_path = model_path
         self.vram_budget_mb = vram_budget_mb
