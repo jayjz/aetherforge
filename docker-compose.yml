@@ -1,0 +1,21 @@
+# docker-compose.yml
+version: "3.8"
+
+services:
+  aetherforge:
+    build: .
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ./models:/app/models          # Structural mount for targeted GGUF models
+      - ./config.yaml:/app/config.yaml # Injects local configuration file at runtime
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

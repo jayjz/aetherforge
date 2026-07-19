@@ -2,52 +2,89 @@
 AetherForge Configuration State
 ===============================
 Single source of truth for all hardware limits, file paths, and Gatekeeper 
-heuristics. Automatically parses from environment variables or a local .env file.
+heuristics. Dynamically merges a local config.yaml file with environment overrides.
 """
 
 import os
+import yaml
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
+from typing import Dict, Any, Optional
 
 class AetherSettings(BaseSettings):
     # Hardware & Model Configuration
-    model_path: str = Field(
-        default=os.path.join("models", "DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf"), 
-        description="Path to the GGML/GGUF model file."
-    )
-    vram_budget_mb: int = Field(default=8000, gt=0, description="Target VRAM limit in MB.")
-    ram_budget_mb: int = Field(default=32000, gt=0, description="Target System RAM limit in MB.")
-    n_ctx: int = Field(default=4096, gt=0, description="Context window size.")
+    model_path: str = Field(default="models/DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf")
+    vram_budget_mb: int = Field(default=8000)
+    ram_budget_mb: int = Field(default=32000)
+    n_ctx: int = Field(default=4096)
 
     # Strategy To GPU Layer Mapping 
-    # (Defaults calibrated for RTX 4060 8GB + DeepSeek-Lite)
-    layers_high_fidelity: int = Field(default=15, ge=0, description="GPU Layers allocated during high_fidelity mode.")
-    layers_balanced: int = Field(default=10, ge=0, description="GPU Layers allocated during balanced mode.")
-    layers_aggressive_quant: int = Field(default=2, ge=0, description="GPU Layers allocated during aggressive_quant mode.")
+    layers_high_fidelity: int = Field(default=15)
+    layers_balanced: int = Field(default=10)
+    layers_aggressive_quant: int = Field(default=2)
 
     # Gatekeeper Tuning & Heuristics
-    swap_penalty_seconds: float = Field(default=5.8, ge=0.0, description="Base time in seconds to perform a Fast-Swap.")
-    state_io_base_seconds: float = Field(default=0.5, ge=0.0, description="Base IO overhead for memory serialization.")
-    state_io_per_token_seconds: float = Field(default=0.0001, ge=0.0, description="RAM IO scaling factor per token.")
+    swap_penalty_seconds: float = Field(default=5.8)
+    state_io_base_seconds: float = Field(default=0.5)
+    state_io_per_token_seconds: float = Field(default=0.0001)
     
     # Gatekeeper Live Telemetry & Safety Guards
-    telemetry_alpha: float = Field(default=0.3, ge=0.0, le=1.0, description="EMA smoothing factor.")
-    tps_min_clamp: float = Field(default=2.0, description="Absolute minimum TPS floor to prevent death spirals.")
-    tps_max_clamp: float = Field(default=60.0, description="Absolute maximum TPS ceiling.")
-    
-    # Hardware Safety Guards
-    max_safe_context_tokens: int = Field(default=8192, description="Absolute ceiling for context tokens.")
-    max_gpu_temp_c: int = Field(default=80, description="Thermal kill switch ceiling in Celsius.")
-    max_vram_allocation_pct: float = Field(default=95.0, description="Maximum allowable physical VRAM fragmentation.")
+    telemetry_alpha: float = Field(default=0.3)
+    tps_min_clamp: float = Field(default=2.0)
+    tps_max_clamp: float = Field(default=60.0)
+    max_safe_context_tokens: int = Field(default=8192)
+    max_gpu_temp_c: int = Field(default=80)
+    max_vram_allocation_pct: float = Field(default=95.0)
 
-    tps_high_fidelity: float = Field(default=23.71, gt=0.0, description="Estimated decode speed for high_fidelity.")
-    tps_balanced: float = Field(default=11.10, gt=0.0, description="Estimated decode speed for balanced.")
-    tps_aggressive_quant: float = Field(default=12.10, gt=0.0, description="Estimated decode speed for aggressive_quant.")
+    # Performance Estimates
+    tps_high_fidelity: float = Field(default=23.71)
+    tps_balanced: float = Field(default=11.10)
+    tps_aggressive_quant: float = Field(default=12.10)
 
     # Server Configuration
     api_host: str = Field(default="127.0.0.1")
-    api_port: int = Field(default=8000, gt=0, le=65535)
+    api_port: int = Field(default=8000)
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-settings = AetherSettings()
+    @classmethod
+    def load_from_yaml(cls, yaml_path: str = "config.yaml") -> "AetherSettings":
+        """Pre-parses a YAML file to populate settings, enforcing fail-fast validation."""
+        if not os.path.exists(yaml_path):
+            print(f"[Config] No {yaml_path} detected. Initializing standard environment state.")
+            return cls()
+
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            raw_yaml = yaml.safe_load(f) or {}
+
+        # Flatten nested YAML structure into flat Pydantic attributes
+        flat_data = {}
+        if "model" in raw_yaml:
+            flat_data["model_path"] = raw_yaml["model"].get("path")
+            flat_data["n_ctx"] = raw_yaml["model"].get("n_ctx")
+            
+        if "strategies" in raw_yaml:
+            for mode, profile in raw_yaml["strategies"].items():
+                flat_data[f"layers_{mode}"] = profile.get("gpu_layers")
+                flat_data[f"tps_{mode}"] = profile.get("tps_estimate")
+
+        if "gatekeeper" in raw_yaml:
+            gk = raw_yaml["gatekeeper"]
+            flat_data["swap_penalty_seconds"] = gk.get("swap_penalty_seconds")
+            flat_data["telemetry_alpha"] = gk.get("telemetry_alpha")
+            flat_data["max_gpu_temp_c"] = gk.get("max_gpu_temp_c")
+            flat_data["max_vram_allocation_pct"] = gk.get("max_vram_pct")
+            flat_data["max_safe_context_tokens"] = gk.get("max_safe_context_tokens")
+
+        if "server" in raw_yaml:
+            flat_data["api_host"] = raw_yaml["server"].get("host")
+            flat_data["api_port"] = raw_yaml["server"].get("port")
+
+        # Strip out None values to allow fields to fall back to Pydantic defaults
+        cleaned_data = {k: v for k, v in flat_data.items() if v is not None}
+        
+        print(f"[Config] Successfully compiled state from local {yaml_path}")
+        return cls(**cleaned_data)
+
+# Global instantiation hook
+settings = AetherSettings.load_from_yaml()

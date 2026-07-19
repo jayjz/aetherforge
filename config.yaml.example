@@ -1,0 +1,26 @@
+# config.yaml.example - Calibrated for consumer hardware profiles
+model:
+  path: "models/DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf"
+  n_ctx: 8192
+
+strategies:
+  high_fidelity:
+    gpu_layers: 15
+    tps_estimate: 23.0
+  balanced:
+    gpu_layers: 10
+    tps_estimate: 11.0
+  aggressive_quant:
+    gpu_layers: 2
+    tps_estimate: 12.0
+
+gatekeeper:
+  swap_penalty_seconds: 6.0
+  telemetry_alpha: 0.3
+  max_gpu_temp_c: 75
+  max_vram_pct: 85
+  max_safe_context_tokens: 6000
+
+server:
+  host: "0.0.0.0"
+  port: 8000
