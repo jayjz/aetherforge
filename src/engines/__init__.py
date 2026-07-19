@@ -1,38 +1,27 @@
-"""
-AetherForge Engine Factory
-==========================
-Dynamically loads the requested backend (Llama, KTransformers, or Mock).
-"""
-
-from typing import Optional
-from src.engines.base import BaseAetherEngine
-from src.engines.mock_engine import MockAetherEngine
+import os
+from .base import BaseAetherEngine
+from .mock_engine import MockAetherEngine
+from .kt_engine import KTransformersEngine
+from .llama_engine import LlamaEngine 
 
 def create_engine(engine_type: str, model_path: str, vram_budget_mb: int, n_ctx: int) -> BaseAetherEngine:
     """
-    Factory pattern to initialize the correct hardware abstraction.
+    Factory routes to the correct hardware backend.
+    Includes defensive fallbacks to protect the control plane.
     """
-    if engine_type == "llama":
-        try:
-            from src.engines.llama_engine import LlamaEngine
-            print(f"[Factory] Initializing primary Llama.cpp backend...")
-            return LlamaEngine(model_path=model_path, vram_budget_mb=vram_budget_mb, n_ctx=n_ctx)
-        except ImportError as e:
-            print(f"[Factory] Llama backend unavailable ({e}). Defaulting to Mock.")
-            return MockAetherEngine(model_path=model_path, vram_budget_mb=vram_budget_mb, n_ctx=n_ctx)
-            
+    if engine_type == "mock":
+        return MockAetherEngine(model_path, vram_budget_mb, n_ctx)
+        
     elif engine_type == "ktransformers":
-        try:
-            from src.engines.kt_engine import KTransformersEngine
-            print(f"[Factory] Initializing KTransformers experimental backend...")
-            return KTransformersEngine(model_path=model_path, vram_budget_mb=vram_budget_mb, n_ctx=n_ctx)
-        except ImportError as e:
-            print(f"[Factory] KTransformers backend unavailable ({e}). Defaulting to Mock.")
-            return MockAetherEngine(model_path=model_path, vram_budget_mb=vram_budget_mb, n_ctx=n_ctx)
+        if os.getenv("ENABLE_KTRANSFORMERS", "").lower() == "true":
+            print("[Factory] ktransformers flag detected. Routing to KT Engine.")
+            return KTransformersEngine(model_path, vram_budget_mb, n_ctx)
+        else:
+            print("[Factory] ENABLE_KTRANSFORMERS is not true. Falling back to LlamaEngine.")
+            return LlamaEngine(model_path, vram_budget_mb, n_ctx)
             
-    elif engine_type == "mock":
-        print(f"[Factory] Initializing headless Mock backend...")
-        return MockAetherEngine(model_path=model_path, vram_budget_mb=vram_budget_mb, n_ctx=n_ctx)
+    elif engine_type == "llama":
+        return LlamaEngine(model_path, vram_budget_mb, n_ctx)
         
     else:
-        raise ValueError(f"Unknown engine_type requested: {engine_type}")
+        raise ValueError(f"Unknown engine type requested: {engine_type}")
