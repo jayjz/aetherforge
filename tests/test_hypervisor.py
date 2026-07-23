@@ -2,17 +2,33 @@
 AetherForge Hypervisor Integration Tests
 ========================================
 Executes pure logic validation against the control plane routes using
-the MockAetherEngine fallback profile.
+the MockAetherEngine fallback profile. Ensures deterministic testing 
+by forcing headless mock variables.
 """
 
+import sys
+import os
 import pytest
 from fastapi.testclient import TestClient
+
+# 1. Path injection so Pytest can locate the 'src' module
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# 2. Force strict testing environment BEFORE importing server logic
+os.environ["AETHER_ENGINE"] = "mock"
+os.environ["AETHER_CHAOS"] = "false"  # Disable random 503 lockouts during unit tests
+
 from src.server import app
-from src.config import settings
 
-client = TestClient(app)
+# 3. Fixture ensures the FastAPI lifespan (engine boot, topology load) runs cleanly
+@pytest.fixture
+def client():
+    with TestClient(app) as c:
+        yield c
 
-def test_system_discovery_endpoints():
+def test_system_discovery_endpoints(client):
     """Validates that agent introspection routes return properly structured contracts."""
     # Test Cache Status
     response = client.get("/system/cache")
@@ -27,6 +43,7 @@ def test_system_discovery_endpoints():
     metrics = response.json()
     assert "vram_pressure" in metrics
     assert "performance_baselines" in metrics
+    assert "thermal_lock_active" in metrics  # Validating our new addition
 
     # Test OpenAI Function Schema Generation
     response = client.get("/system/tools")
@@ -35,11 +52,10 @@ def test_system_discovery_endpoints():
     assert tools["type"] == "function"
     assert tools["function"]["name"] == "aetherforge_optimize_vram"
 
-
-def test_gatekeeper_swap_matrix():
+def test_gatekeeper_swap_matrix(client):
     """Verifies that the Gatekeeper rejects unprofitable swaps and allows profitable ones."""
     
-    # Force a heavy generation payload that makes a high_fidelity swap profitable
+    # 1. Force a heavy generation payload that makes a high_fidelity swap profitable
     payload = {
         "mode": "high_fidelity",
         "estimated_context_tokens": 100,
@@ -47,9 +63,9 @@ def test_gatekeeper_swap_matrix():
     }
     response = client.post("/system/strategy", json=payload)
     assert response.status_code == 200
-    assert response.json()["status"] == "simulation_strategy_accepted"
+    assert response.json()["status"] == "strategy_applied"
 
-    # A short output request should be rejected due to swap latency overhead
+    # 2. A short output request should be rejected due to swap latency overhead
     unprofitable_payload = {
         "mode": "balanced",
         "estimated_context_tokens": 100,
