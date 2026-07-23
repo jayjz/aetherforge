@@ -10,7 +10,7 @@ import os
 import yaml
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Literal
 
 class AetherSettings(BaseSettings):
     # Hardware & Model Configuration
@@ -49,6 +49,10 @@ class AetherSettings(BaseSettings):
     # Server Configuration
     api_host: str = Field(default="127.0.0.1")
     api_port: int = Field(default=8000, gt=0, le=65535)
+    aether_engine: Literal["auto", "mock", "llama", "ktransformers"] = Field(
+        default="auto", 
+        description="Force 'mock', 'llama', or 'ktransformers'. 'auto' detects based on model presence."
+    )
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -84,6 +88,7 @@ class AetherSettings(BaseSettings):
         if "server" in raw_yaml:
             flat_data["api_host"] = raw_yaml["server"].get("host")
             flat_data["api_port"] = raw_yaml["server"].get("port")
+            flat_data["aether_engine"] = raw_yaml["server"].get("engine")
 
         # Strip out None values to allow fields to fall back to Pydantic defaults
         cleaned_data = {k: v for k, v in flat_data.items() if v is not None}

@@ -2,23 +2,25 @@
 AetherForge Hardware Emulator (The Mock Muscle)
 ==============================================
 A purely software-driven emulation of the AetherEngine.
-Simulates Fast-Swap latencies and generation speeds (TPS) based on 
-the configuration file, allowing full Control Plane testing without a GPU.
+Simulates Fast-Swap latencies, non-deterministic TPS jitter (±15%), 
+and intermittent hardware failures to stress-test the Control Plane.
 """
 
 import time
+import random
 from typing import Dict, Any
 from src.config import settings
 from src.engines.base import BaseAetherEngine
 
 class MockAetherEngine(BaseAetherEngine):
     def __init__(self, model_path: str, vram_budget_mb: float = 8000, n_ctx: int = 4096):
+        super().__init__()
         self.model_path = model_path
         self.vram_budget_mb = vram_budget_mb
         self.n_ctx = n_ctx
         self.current_strategy = "balanced"
         
-        # Map configuration TPS to simulate accurate generation times
+        # Map configuration TPS to simulate baseline generation speeds
         self.tps_map = {
             "high_fidelity": settings.tps_high_fidelity,
             "balanced": settings.tps_balanced,
@@ -34,8 +36,7 @@ class MockAetherEngine(BaseAetherEngine):
         return max(1, len(text) // 4)
 
     def apply_strategy(self, mode: str) -> Dict[str, Any]:
-        """Simulates the physical VRAM Fast-Swap penalty and returns telemetry metrics."""
-        # The expected return structure
+        """Simulates physical Fast-Swap latencies with intermittent swap failures."""
         metrics = {"extract_seconds": 0.0, "reload_seconds": 0.0, "inject_seconds": 0.0}
         
         if mode not in self.tps_map:
@@ -43,19 +44,25 @@ class MockAetherEngine(BaseAetherEngine):
             mode = "balanced"
             
         if mode == self.current_strategy:
-            return {"success": True, "metrics": metrics} # No-op
+            return {"success": True, "metrics": metrics}
             
         print(f"\n[MockEngine] SIMULATED HARDWARE OVERRIDE INITIATED.")
         print(f" -> Shifting from '{self.current_strategy}' to '{mode}'.")
         
+        # 5% chance the simulated CUDA allocation fails
+        if random.random() < 0.05:
+            print(" -> [MockEngine] SIMULATED CHAOS: CUDA OutOfMemoryError during reload!")
+            return {"success": False, "metrics": metrics}
+
         # 1. Simulate Extraction
         mock_extract = settings.state_io_base_seconds * 0.5
         time.sleep(mock_extract)
         metrics["extract_seconds"] = mock_extract
         
-        # 2. Simulate Reload
-        mock_reload = settings.swap_penalty_seconds
-        print(f" -> [Simulation] Emulating {mock_reload}s physical model reload...")
+        # 2. Simulate Reload with slight latency jitter
+        reload_jitter = settings.swap_penalty_seconds * random.uniform(-0.10, 0.10)
+        mock_reload = max(0.1, settings.swap_penalty_seconds + reload_jitter)
+        print(f" -> [Simulation] Emulating {mock_reload:.2f}s physical model reload...")
         time.sleep(mock_reload)
         metrics["reload_seconds"] = mock_reload
         
@@ -69,22 +76,26 @@ class MockAetherEngine(BaseAetherEngine):
         
         return {"success": True, "metrics": metrics}
 
-    def generate(self, prompt: str, max_tokens: int = 100) -> Dict[str, Any]:
-        """Simulates token generation constrained by the active strategy's TPS limit."""
-        print(f"\n[MockEngine] Commencing simulated generation (Mode: {self.current_strategy.upper()})...")
+    def generate(self, prompt: str, max_tokens: int = 100, temperature: float = 0.7) -> Dict[str, Any]:
+        """Simulates inference with ±15% TPS jitter to exercise the Gatekeeper EMA."""
+        print(f"\n[MockEngine] Commencing simulated generation (Mode: {self.current_strategy.upper()}, Temp: {temperature:.2f})...")
         
-        target_tps = self.tps_map[self.current_strategy]
-        simulated_time = max_tokens / target_tps
+        # Calculate TPS with ±15% non-deterministic jitter
+        base_tps = self.tps_map.get(self.current_strategy, settings.tps_balanced)
+        jitter = base_tps * random.uniform(-0.15, 0.15)
+        actual_tps = max(settings.tps_min_clamp, base_tps + jitter)
         
-        print(f" -> [Simulation] Emulating {max_tokens} tokens at {target_tps} t/s...")
-        time.sleep(simulated_time)
+        simulated_time = max_tokens / actual_tps
+        
+        # Cap sleep time to 1.5s so local development loop remains responsive
+        time.sleep(min(simulated_time, 1.5))
         
         return {
-            "text": f"[MOCK GENERATION] AetherForge simulated {max_tokens} tokens successfully under {self.current_strategy} constraints.",
+            "text": f"[MOCK GENERATION] AetherForge simulated {max_tokens} tokens at {actual_tps:.2f} t/s (temp={temperature}).",
             "metrics": {
                 "tokens_generated": max_tokens,
                 "time_seconds": simulated_time,
-                "tokens_per_second": target_tps,
+                "tokens_per_second": actual_tps,
                 "active_strategy": self.current_strategy
             }
         }

@@ -85,7 +85,7 @@ async def hardware_watchdog(state: HypervisorState):
         await asyncio.sleep(2.0)
         vitals = state.hardware_monitor.get_vitals()
         
-        if vitals["status"] == "online":
+        if vitals["status"] in ["online", "simulated"]:
             current_temp = vitals["temp_c"]
             current_vram = vitals["vram_pct"]
             
@@ -114,7 +114,12 @@ async def lifespan(app: FastAPI):
     if os.path.exists(topo_path):
         state.cache_manager.load_topology(topo_path)
 
-    target_engine = "llama" if os.path.exists(settings.model_path) else "mock"
+    # Respect explicit engine configuration
+    if settings.aether_engine.lower() != "auto":
+        target_engine = settings.aether_engine.lower()
+        print(f"[API] Engine explicitly forced to: {target_engine.upper()}")
+    else:
+        target_engine = "llama" if os.path.exists(settings.model_path) else "mock"
     
     try:
         state.hardware_engine = create_engine(
@@ -155,6 +160,23 @@ class GenerationPayload(BaseModel):
 
 
 # --- 4. HARDENED ROUTES ---
+
+@app.get("/system/cache")
+async def get_cache_status(request: Request):
+    """Exposes current virtual tensor layout and budget."""
+    state = request.app.state.hypervisor
+    vram_experts = [e.expert_id for e in state.cache_manager.experts.values() if e.location == "VRAM"]
+    
+    return {
+        "status": "simulation" if state.is_simulated else "online",
+        "current_step": state.cache_manager.current_step,
+        "vram_budget_mb": state.cache_manager.vram_budget_mb,
+        "current_vram_usage_mb": state.cache_manager.current_vram_usage,
+        "active_experts_in_vram": vram_experts,
+        "active_strategy": state.hardware_engine.current_strategy if state.hardware_engine else "none",
+        "engine_available": not state.is_simulated
+    }
+
 @app.get("/system/metrics")
 async def get_metrics(request: Request):
     state = request.app.state.hypervisor
@@ -174,6 +196,33 @@ async def get_metrics(request: Request):
         "silicon_vitals": state.hardware_monitor.get_vitals(),
         "performance_baselines": gatekeeper_telemetry,
         "engine_state": "simulation" if state.is_simulated else "online"
+    }
+
+@app.get("/system/tools")
+async def get_tool_schema():
+    """
+    Dynamically generates an OpenAI-compatible function calling schema 
+    directly from the Pydantic StrategyPayload. Agents use this to discover commands.
+    """
+    base_schema = StrategyPayload.model_json_schema()
+    properties = base_schema.get("properties", {})
+    
+    # Strip unnecessary Pydantic metadata for strict LLM tool compliance
+    for prop in properties.values():
+        prop.pop("title", None)
+        prop.pop("default", None)
+
+    return {
+        "type": "function",
+        "function": {
+            "name": "aetherforge_optimize_vram",
+            "description": "Hypervisor control: Dynamically allocates physical VRAM layers based on task complexity.",
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": base_schema.get("required", [])
+            }
+        }
     }
 
 @app.post("/system/strategy")
@@ -248,8 +297,12 @@ async def generate_text(payload: GenerationPayload, request: Request):
             else:
                 active_mode = state.current_strategy
 
-        # The muscle is finally connected.
-        output = state.hardware_engine.generate(prompt=payload.prompt, max_tokens=payload.max_tokens)
+        # Execute generation passing temperature through to engine contract
+        output = state.hardware_engine.generate(
+            prompt=payload.prompt, 
+            max_tokens=payload.max_tokens,
+            temperature=payload.temperature
+        )
 
     measured_tps = output["metrics"].get("tokens_per_second", 0)
     if measured_tps > 0:
