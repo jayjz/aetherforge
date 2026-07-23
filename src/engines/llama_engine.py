@@ -11,9 +11,11 @@ import gc
 from typing import Dict, Any
 from llama_cpp import Llama
 from src.config import settings
+from src.engines.base import BaseAetherEngine
 
-class LlamaEngine:    
+class LlamaEngine(BaseAetherEngine):    
     def __init__(self, model_path: str, vram_budget_mb: float = 8000, n_ctx: int = 4096):
+        super().__init__()
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model not found at {model_path}")
             
@@ -23,7 +25,7 @@ class LlamaEngine:
         self.current_strategy = "balanced"
         self.llm = None
         
-        # Build memory profile dynamically from centralized config (No more magic numbers)
+        # Build memory profile dynamically from centralized config
         self.strategy_map = {
             "high_fidelity": settings.layers_high_fidelity,
             "balanced": settings.layers_balanced,
@@ -35,8 +37,12 @@ class LlamaEngine:
         print(f"[Engine] Strategy Layer Scheme: {self.strategy_map}")
         
         # Initial boot
-        self._load_model(self.strategy_map[self.current_strategy])
+        self._load_model(self._map_mode_to_layers(self.current_strategy))
         print("[Engine] CUDA Engine Online.")
+
+    def _map_mode_to_layers(self, mode: str) -> int:
+        """Safely resolves the strategy to a specific layer count."""
+        return self.strategy_map.get(mode, self.strategy_map["balanced"])
 
     def _load_model(self, n_gpu_layers: int):
         """Safely allocates the model into hardware memory boundaries."""
@@ -55,7 +61,7 @@ class LlamaEngine:
         tokens = self.llm.tokenize(text.encode('utf-8'))
         return len(tokens)
 
-    def apply_strategy(self, mode: str) -> dict:
+    def apply_strategy(self, mode: str) -> Dict[str, Any]:
         """
         Executes a Fast-Swap protocol by extracting the active state,
         tearing down the model constraints, and re-allocating VRAM layers.
@@ -70,19 +76,17 @@ class LlamaEngine:
         # 1. Measure KV Extraction / Serialization to System RAM
         if self.llm is not None:
             t_start_extract = time.perf_counter()
-            # Under the hood llama-cpp-python state extraction
             raw_state = self.llm.save_state() 
             metrics["extract_seconds"] = time.perf_counter() - t_start_extract
             
             # Wipe state to free VRAM before reload
             del self.llm
-            import gc
             gc.collect()
             
         # 2. Measure Model Reload & Layout Re-allocation Time
         t_start_reload = time.perf_counter()
         target_layers = self._map_mode_to_layers(mode)
-        self._load_model(target_layers) # Your internal llama_context builder
+        self._load_model(target_layers)
         metrics["reload_seconds"] = time.perf_counter() - t_start_reload
         
         # 3. Measure KV Injection Time into the new VRAM topology
@@ -93,3 +97,40 @@ class LlamaEngine:
 
         self.current_strategy = mode
         return {"success": True, "metrics": metrics}
+
+    def generate(self, prompt: str, max_tokens: int = 100) -> Dict[str, Any]:
+        """
+        Executes physical inference and calculates Gatekeeper telemetry.
+        """
+        if not self.llm:
+            raise RuntimeError("Cannot generate: Hardware engine is offline.")
+
+        t_start = time.perf_counter()
+        
+        # llama-cpp-python native inference call
+        output = self.llm(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=0.7
+        )
+        
+        t_end = time.perf_counter()
+        elapsed_seconds = t_end - t_start
+        
+        text_result = output["choices"][0]["text"]
+        
+        # Safely extract token usage, fallback to tokenizer if missing
+        generated_tokens = output.get("usage", {}).get("completion_tokens", 0)
+        if generated_tokens == 0:
+            generated_tokens = len(self.llm.tokenize(text_result.encode('utf-8')))
+            
+        tps = generated_tokens / elapsed_seconds if elapsed_seconds > 0 else 0.0
+
+        return {
+            "text": text_result,
+            "metrics": {
+                "tokens_generated": generated_tokens,
+                "time_seconds": elapsed_seconds,
+                "tokens_per_second": tps
+            }
+        }
