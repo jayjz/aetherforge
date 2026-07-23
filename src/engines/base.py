@@ -22,7 +22,7 @@ class BaseAetherEngine(ABC):
         pass
 
     @abstractmethod
-    def generate(self, prompt: str, max_tokens: int = 100) -> Dict[str, Any]:
+    def generate(self, prompt: str, max_tokens: int = 100, temperature: float = 0.7) -> Dict[str, Any]:
         """
         Must yield text and execution telemetry.
         Expected shape: {"text": str, "metrics": {"tokens_generated": int, "time_seconds": float, "tokens_per_second": float}}

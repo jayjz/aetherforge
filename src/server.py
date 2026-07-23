@@ -9,56 +9,11 @@ from typing import List, Optional, Dict, Any
 from src.cache_manager import AetherCacheManager
 from src.config import settings
 from src.engines import create_engine
-
-# --- OPTIONAL DEFENSIBLY LOADED NVML TOOLING ---
-try:
-    import pynvml
-    HAS_NVML = True
-except ImportError:
-    HAS_NVML = False
-
-
-class HardwareMonitor:
-    """
-    Reads physical hardware vitals using NVIDIA Management Library.
-    Degrades gracefully to safe simulated modes if missing or on headless targets.
-    """
-    def __init__(self):
-        self.active = False
-        if HAS_NVML:
-            try:
-                pynvml.nvmlInit()
-                # Targets primary consumer GPU instance (RTX 4060)
-                self.handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-                self.active = True
-                print("[HardwareMonitor] NVML hardware bindings successfully mapped. Silicon telemetry active.")
-            except Exception as e:
-                print(f"[HardwareMonitor] NVML initialization bypassed: {e}. Running simulation fallback.")
-        else:
-            print("[HardwareMonitor] nvidia-ml-py library absent. Running simulation fallback.")
-
-    def get_vitals(self) -> Dict[str, Any]:
-        """
-        Hardcoded context spoof for Cold Burn-In verification.
-        Forces the background watchdog to evaluate a critical breach with zero physical load.
-        """
-        return {"temp_c": 90, "vram_pct": 45.0, "status": "online"}
-
-    def shutdown(self):
-        if self.active:
-            try:
-                pynvml.nvmlShutdown()
-                print("[HardwareMonitor] NVML resource contexts cleanly unmapped.")
-            except:
-                pass
+from src.hardware_monitor import HardwareMonitor
 
 
 # --- 1. HARDENED STATE CONTAINER ---
 class HypervisorState:
-    """
-    Thread-safe container isolating the hypervisor runtime context from global module scope.
-    Encapsulates memory boundaries, active strategies, and hardware bridges.
-    """
     def __init__(self):
         self.cache_manager = AetherCacheManager(
             vram_budget_mb=settings.vram_budget_mb, 
@@ -70,8 +25,6 @@ class HypervisorState:
         self.current_strategy = "balanced"
         self.is_simulated = True 
         self.lock = asyncio.Lock() 
-        
-        # --- Emergency hardware kill switch ---
         self.emergency_thermal_lock = False
 
 
@@ -106,7 +59,7 @@ class EconomicGatekeeper:
             return False 
 
         if context_tokens > settings.max_safe_context_tokens:
-            print(f" -> [REJECTED - SAFETY GUARD] Context size ({context_tokens}) exceeds max safe swap limit ({settings.max_safe_context_tokens}).")
+            print(f" -> [REJECTED] Context size ({context_tokens}) exceeds limit ({settings.max_safe_context_tokens}).")
             return False
 
         current_tps = self.profiles.get(current_mode, self.profiles["balanced"])["live_tps"]
@@ -125,35 +78,27 @@ class EconomicGatekeeper:
 
 # --- 2. ASYNCHRONOUS HARDWARE WATCHDOG ---
 async def hardware_watchdog(state: HypervisorState):
-    """
-    Background task that aggressively polls GPU vitals every 2 seconds.
-    Engages a global thermal lockout if thresholds are breached, forcing agents to wait.
-    """
     print("[Watchdog] Active Hardware Thermal Watchdog initialized. Monitoring silicon health.")
-    cooldown_target = settings.max_gpu_temp_c - 10  # Must drop 10 degrees below max to unlock
+    cooldown_target = settings.max_gpu_temp_c - 10 
     
     while True:
         await asyncio.sleep(2.0)
         vitals = state.hardware_monitor.get_vitals()
         
-        if vitals["status"] == "online":
+        if vitals["status"] in ["online", "simulated"]:
             current_temp = vitals["temp_c"]
             current_vram = vitals["vram_pct"]
             
-            # 1. Check for Breach
             if not state.emergency_thermal_lock:
                 if current_temp >= settings.max_gpu_temp_c or current_vram >= settings.max_vram_allocation_pct:
                     print(f"\n[CRITICAL WARNING] HARDWARE LIMIT BREACHED!")
                     print(f" -> Temp: {current_temp}°C (Max: {settings.max_gpu_temp_c}°C)")
                     print(f" -> VRAM: {current_vram:.1f}% (Max: {settings.max_vram_allocation_pct}%)")
-                    print("[CRITICAL WARNING] Engaging Emergency Thermal Lockout. Suspending all agent requests.")
                     state.emergency_thermal_lock = True
                     
-            # 2. Check for Recovery (Hysteresis)
             elif state.emergency_thermal_lock:
                 if current_temp <= cooldown_target and current_vram < settings.max_vram_allocation_pct:
                     print(f"\n[RECOVERY] GPU cooled to {current_temp}°C. VRAM stabilized.")
-                    print("[RECOVERY] Disengaging Thermal Lockout. Resuming agent operations.")
                     state.emergency_thermal_lock = False
 
 
@@ -169,7 +114,12 @@ async def lifespan(app: FastAPI):
     if os.path.exists(topo_path):
         state.cache_manager.load_topology(topo_path)
 
-    target_engine = "llama" if os.path.exists(settings.model_path) else "mock"
+    # Respect explicit engine configuration
+    if settings.aether_engine.lower() != "auto":
+        target_engine = settings.aether_engine.lower()
+        print(f"[API] Engine explicitly forced to: {target_engine.upper()}")
+    else:
+        target_engine = "llama" if os.path.exists(settings.model_path) else "mock"
     
     try:
         state.hardware_engine = create_engine(
@@ -183,7 +133,6 @@ async def lifespan(app: FastAPI):
         print(f"[API] Fatal Engine Factory crash: {e}")
         raise RuntimeError(f"Hypervisor engine initialization failed: {e}")
         
-    # Start the async watchdog task
     watchdog_task = asyncio.create_task(hardware_watchdog(state))
         
     yield
@@ -214,15 +163,17 @@ class GenerationPayload(BaseModel):
 
 @app.get("/system/cache")
 async def get_cache_status(request: Request):
+    """Exposes current virtual tensor layout and budget."""
     state = request.app.state.hypervisor
     vram_experts = [e.expert_id for e in state.cache_manager.experts.values() if e.location == "VRAM"]
+    
     return {
         "status": "simulation" if state.is_simulated else "online",
         "current_step": state.cache_manager.current_step,
         "vram_budget_mb": state.cache_manager.vram_budget_mb,
         "current_vram_usage_mb": state.cache_manager.current_vram_usage,
         "active_experts_in_vram": vram_experts,
-        "active_strategy": state.hardware_engine.current_strategy,
+        "active_strategy": state.hardware_engine.current_strategy if state.hardware_engine else "none",
         "engine_available": not state.is_simulated
     }
 
@@ -240,23 +191,46 @@ async def get_metrics(request: Request):
         "vram_pressure": {
             "current_mb": state.cache_manager.current_vram_usage,
             "budget_mb": state.cache_manager.vram_budget_mb,
-            "utilization_pct": (state.cache_manager.current_vram_usage / state.cache_manager.vram_budget_mb) * 100
+            "utilization_pct": (state.cache_manager.current_vram_usage / state.cache_manager.vram_budget_mb) * 100 if state.cache_manager.vram_budget_mb else 0
         },
         "silicon_vitals": state.hardware_monitor.get_vitals(),
         "performance_baselines": gatekeeper_telemetry,
         "engine_state": "simulation" if state.is_simulated else "online"
     }
 
+@app.get("/system/tools")
+async def get_tool_schema():
+    """
+    Dynamically generates an OpenAI-compatible function calling schema 
+    directly from the Pydantic StrategyPayload. Agents use this to discover commands.
+    """
+    base_schema = StrategyPayload.model_json_schema()
+    properties = base_schema.get("properties", {})
+    
+    # Strip unnecessary Pydantic metadata for strict LLM tool compliance
+    for prop in properties.values():
+        prop.pop("title", None)
+        prop.pop("default", None)
+
+    return {
+        "type": "function",
+        "function": {
+            "name": "aetherforge_optimize_vram",
+            "description": "Hypervisor control: Dynamically allocates physical VRAM layers based on task complexity.",
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": base_schema.get("required", [])
+            }
+        }
+    }
+
 @app.post("/system/strategy")
 async def update_strategy(payload: StrategyPayload, request: Request):
     state = request.app.state.hypervisor
     
-    # --- ZERO TOLERANCE HARDWARE LOCKOUT CHECK ---
     if state.emergency_thermal_lock:
-        raise HTTPException(
-            status_code=503, 
-            detail="SYSTEM LOCKED: GPU is currently cooling down from a thermal event. Please back off and try again later."
-        )
+        raise HTTPException(status_code=503, detail="SYSTEM LOCKED: GPU is currently cooling down.")
 
     target_mode = payload.mode.lower()
     
@@ -300,12 +274,8 @@ async def update_strategy(payload: StrategyPayload, request: Request):
 async def generate_text(payload: GenerationPayload, request: Request):
     state = request.app.state.hypervisor
     
-    # --- ZERO TOLERANCE HARDWARE LOCKOUT CHECK ---
     if state.emergency_thermal_lock:
-        raise HTTPException(
-            status_code=503, 
-            detail="SYSTEM LOCKED: GPU is currently cooling down from a thermal event. Please back off and try again later."
-        )
+        raise HTTPException(status_code=503, detail="SYSTEM LOCKED: GPU is currently cooling down.")
 
     exact_prompt_tokens = state.hardware_engine.count_tokens(payload.prompt)
     if exact_prompt_tokens > settings.max_safe_context_tokens:
@@ -327,7 +297,12 @@ async def generate_text(payload: GenerationPayload, request: Request):
             else:
                 active_mode = state.current_strategy
 
-        output = state.hardware_engine.generate(prompt=payload.prompt, max_tokens=payload.max_tokens)
+        # Execute generation passing temperature through to engine contract
+        output = state.hardware_engine.generate(
+            prompt=payload.prompt, 
+            max_tokens=payload.max_tokens,
+            temperature=payload.temperature
+        )
 
     measured_tps = output["metrics"].get("tokens_per_second", 0)
     if measured_tps > 0:
