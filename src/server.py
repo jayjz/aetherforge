@@ -11,6 +11,14 @@ from src.config import settings
 from src.engines import create_engine
 from src.hardware_monitor import HardwareMonitor
 
+# --- LOGGING INITIALIZATION ---
+from src.logger import setup_logging, get_logger
+
+setup_logging()
+api_logger = get_logger("api")
+gatekeeper_logger = get_logger("gatekeeper")
+watchdog_logger = get_logger("watchdog")
+
 
 # --- 1. HARDENED STATE CONTAINER ---
 class HypervisorState:
@@ -59,7 +67,7 @@ class EconomicGatekeeper:
             return False 
 
         if context_tokens > settings.max_safe_context_tokens:
-            print(f" -> [REJECTED] Context size ({context_tokens}) exceeds limit ({settings.max_safe_context_tokens}).")
+            gatekeeper_logger.warning(f"Swap Rejected: Context size ({context_tokens}) exceeds limit ({settings.max_safe_context_tokens}).")
             return False
 
         current_tps = self.profiles.get(current_mode, self.profiles["balanced"])["live_tps"]
@@ -78,7 +86,7 @@ class EconomicGatekeeper:
 
 # --- 2. ASYNCHRONOUS HARDWARE WATCHDOG ---
 async def hardware_watchdog(state: HypervisorState):
-    print("[Watchdog] Active Hardware Thermal Watchdog initialized. Monitoring silicon health.")
+    watchdog_logger.info("Active Hardware Thermal Watchdog initialized. Monitoring silicon health.")
     cooldown_target = settings.max_gpu_temp_c - 10 
     
     while True:
@@ -91,21 +99,19 @@ async def hardware_watchdog(state: HypervisorState):
             
             if not state.emergency_thermal_lock:
                 if current_temp >= settings.max_gpu_temp_c or current_vram >= settings.max_vram_allocation_pct:
-                    print(f"\n[CRITICAL WARNING] HARDWARE LIMIT BREACHED!")
-                    print(f" -> Temp: {current_temp}°C (Max: {settings.max_gpu_temp_c}°C)")
-                    print(f" -> VRAM: {current_vram:.1f}% (Max: {settings.max_vram_allocation_pct}%)")
+                    watchdog_logger.critical(f"HARDWARE LIMIT BREACHED! Temp: {current_temp}°C (Max: {settings.max_gpu_temp_c}°C) | VRAM: {current_vram:.1f}% (Max: {settings.max_vram_allocation_pct}%)")
                     state.emergency_thermal_lock = True
                     
             elif state.emergency_thermal_lock:
                 if current_temp <= cooldown_target and current_vram < settings.max_vram_allocation_pct:
-                    print(f"\n[RECOVERY] GPU cooled to {current_temp}°C. VRAM stabilized.")
+                    watchdog_logger.info(f"RECOVERY: GPU cooled to {current_temp}°C. VRAM stabilized at {current_vram:.1f}%.")
                     state.emergency_thermal_lock = False
 
 
 # --- 3. STATE-AWARE LIFESPAN ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("\n[API] Booting AetherForge Control Plane...")
+    api_logger.info("Booting AetherForge Control Plane...")
     
     state = HypervisorState()
     app.state.hypervisor = state
@@ -117,7 +123,7 @@ async def lifespan(app: FastAPI):
     # Respect explicit engine configuration
     if settings.aether_engine.lower() != "auto":
         target_engine = settings.aether_engine.lower()
-        print(f"[API] Engine explicitly forced to: {target_engine.upper()}")
+        api_logger.info(f"Engine explicitly forced to: {target_engine.upper()}")
     else:
         target_engine = "llama" if os.path.exists(settings.model_path) else "mock"
     
@@ -130,13 +136,14 @@ async def lifespan(app: FastAPI):
         )
         state.is_simulated = state.hardware_engine.__class__.__name__ == "MockAetherEngine"
     except Exception as e:
-        print(f"[API] Fatal Engine Factory crash: {e}")
+        api_logger.critical(f"Fatal Engine Factory crash: {e}")
         raise RuntimeError(f"Hypervisor engine initialization failed: {e}")
         
     watchdog_task = asyncio.create_task(hardware_watchdog(state))
         
     yield
-    print("\n[API] Shutting down AetherForge Control Plane...")
+    
+    api_logger.info("Shutting down AetherForge Control Plane...")
     watchdog_task.cancel()
     state.hardware_monitor.shutdown()
 
@@ -207,7 +214,6 @@ async def get_tool_schema():
     base_schema = StrategyPayload.model_json_schema()
     properties = base_schema.get("properties", {})
     
-    # Strip unnecessary Pydantic metadata for strict LLM tool compliance
     for prop in properties.values():
         prop.pop("title", None)
         prop.pop("default", None)
@@ -230,6 +236,7 @@ async def update_strategy(payload: StrategyPayload, request: Request):
     state = request.app.state.hypervisor
     
     if state.emergency_thermal_lock:
+        api_logger.warning("Strategy swap rejected: System is thermally locked.")
         raise HTTPException(status_code=503, detail="SYSTEM LOCKED: GPU is currently cooling down.")
 
     target_mode = payload.mode.lower()
@@ -247,6 +254,7 @@ async def update_strategy(payload: StrategyPayload, request: Request):
         )
         
         if not is_profitable:
+            gatekeeper_logger.info(f"Swap Rejected: {state.current_strategy} -> {target_mode} (Unprofitable ROI)")
             return {"status": "rejected", "reason": "Swap latency overhead exceeds raw throughput gains.", "active_mode": state.current_strategy}
         
         state.current_strategy = target_mode
@@ -260,6 +268,7 @@ async def update_strategy(payload: StrategyPayload, request: Request):
             swap_metrics = {}
             
         if not success:
+            api_logger.error(f"Strategy swap to {target_mode} failed at the hardware layer.")
             raise HTTPException(status_code=500, detail="Failed to apply hardware strategy.")
             
         io_total = swap_metrics.get("extract_seconds", 0.0) + swap_metrics.get("inject_seconds", 0.0)
@@ -268,6 +277,7 @@ async def update_strategy(payload: StrategyPayload, request: Request):
         if io_total > 0 or reload_total > 0:
             state.gatekeeper.update_hardware_latencies(physical_swap_seconds=reload_total, io_seconds=io_total)
             
+        gatekeeper_logger.info(f"Swap Executed: Active strategy is now {state.current_strategy} (Reload: {reload_total:.2f}s, IO: {io_total:.2f}s)")
         return {"status": "strategy_applied", "active_mode": state.current_strategy}
 
 @app.post("/generate")
@@ -275,10 +285,12 @@ async def generate_text(payload: GenerationPayload, request: Request):
     state = request.app.state.hypervisor
     
     if state.emergency_thermal_lock:
+        api_logger.warning("Generation rejected: System is thermally locked.")
         raise HTTPException(status_code=503, detail="SYSTEM LOCKED: GPU is currently cooling down.")
 
     exact_prompt_tokens = state.hardware_engine.count_tokens(payload.prompt)
     if exact_prompt_tokens > settings.max_safe_context_tokens:
+        api_logger.warning(f"Generation rejected: Context ({exact_prompt_tokens}) exceeds safety limit ({settings.max_safe_context_tokens}).")
         raise HTTPException(status_code=413, detail=f"Context payload size violates the active hardware safety ceiling.")
 
     active_mode = payload.strategy.mode if payload.strategy else state.current_strategy
@@ -292,6 +304,7 @@ async def generate_text(payload: GenerationPayload, request: Request):
                 expected_output=payload.max_tokens
             )
             if is_profitable:
+                gatekeeper_logger.info(f"Pre-generation Swap Executed: {state.current_strategy} -> {active_mode}")
                 state.hardware_engine.apply_strategy(active_mode)
                 state.current_strategy = active_mode
             else:
@@ -307,6 +320,8 @@ async def generate_text(payload: GenerationPayload, request: Request):
     measured_tps = output["metrics"].get("tokens_per_second", 0)
     if measured_tps > 0:
         state.gatekeeper.update_profile(active_mode, measured_tps)
+        
+    api_logger.info(f"Generation complete: {exact_prompt_tokens} ctx -> {output['metrics'].get('tokens_generated', 0)} tokens @ {measured_tps:.2f} TPS ({active_mode})")
 
     return {
         "text": output["text"],
