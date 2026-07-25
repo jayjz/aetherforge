@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [0.6.0] - 2026-07-25
+### 🚦 Wedge A: Hardware Safety Layer & Mock Control Plane
+**Strategic Pivot:** AetherForge is now officially positioned as a Hardware-Aware Safety Layer for local AI agents. The dynamic memory hypervisor claims (Fast-Swap / KV Survival) have been explicitly demoted to an experimental research track (Wedge B) until C-level VRAM barriers are mathematically proven on 8GB consumer hardware. 
+
+### Added
+- **Asynchronous 3-Stream Logging (`src/logger.py`):** Replaced brittle `print()` statements with a robust `RotatingFileHandler` architecture. 
+  - `logs/aetherforge.log`: Captures all API traffic, TPS metrics, and Gatekeeper ROI math.
+  - `logs/hardware_safety.log`: Isolated audit trail for 503 thermal locks and hardware warnings.
+- **Reference Agent Client (`scripts/safe_agent.py`):** A fully operational Python client demonstrating tool discovery, strategy negotiation, and graceful 503 (Thermal) / 413 (Context) standby/recovery loops.
+- **Dynamic Tool Discovery:** `/system/tools` now emits an OpenAI-compatible JSON schema directly from the Pydantic `StrategyPayload`, allowing autonomous agents to discover how to regulate their own VRAM footprints.
+- **Hardware Circuit Breakers:** Strict enforcement of 503 (Thermal Lock) and 413 (Context Ceiling) rejections across `/generate` and `/system/strategy` routes.
+
+### Changed
+- **Engine Factory Lazy-Loading:** `src/engines/__init__.py` now properly lazy-loads dependencies. The Mock control plane can now boot and run the full test suite on headless/Linux machines without `llama-cpp-python` or CUDA toolkits installed.
+- **LlamaEngine Structural Repair:** Restored the core contract (`generate()` method, temperature propagation, try/except fallbacks) to `src/engines/llama_engine.py`. Added a best-effort `cuCtxSynchronize()` barrier, though 8GB fast-swap remains unverified for production.
+- **Config Loader Discipline:** `src/config.py` now strictly enforces the nested YAML schema. Legacy flat keys that created false configuration confidence have been documented as dead weight.
+- **README Alignment:** Aggressively rewrote the project documentation to match the verified code reality, establishing the safe Mock path as the default execution method.
+
+### Removed
+- Unreliable standard output `print()` calls across the API, replacing them with proper `api`, `watchdog`, and `gatekeeper` logger namespaces.
+- Eager CUDA imports that previously crashed the API on non-GPU environments.
 
 ## [0.5.0] - 2026-07-19
 
