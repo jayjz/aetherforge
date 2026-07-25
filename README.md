@@ -1,43 +1,59 @@
 # AetherForge
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Status: v0.4.0](https://img.shields.io/badge/status-v0.4.0-green.svg)]()
+[![Status: control-plane / Wedge A](https://img.shields.io/badge/status-Wedge%20A%20safety%20layer-green.svg)]()
 [![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey.svg)]()
 
-**Agent-aware memory hypervisor for local MoE inference on consumer GPUs.**
+**Hardware-aware safety and control plane for local AI agents on consumer GPUs.**
 
-AetherForge sits between autonomous agents and llama.cpp. It lets agents request different VRAM strategies mid-session while preserving the KV-cache, so long-context multi-step workflows no longer pay a full prefill penalty on every strategy change.
+AetherForge sits between autonomous agents and local inference. Agents can discover tools, request VRAM strategies, and generate text through a FastAPI control plane that enforces thermal/VRAM circuit breakers, economic swap decisions, and durable audit logs.
 
-**Current production path (v0.4.0):** Controlled Fast-Swap (model reload with different `n_gpu_layers`) + KV-cache serialization + Economic Gatekeeper + OpenAI-compatible tool schema.  
-True in-memory expert routing remains on the research track.
+**What is verified today (Wedge A):** Mock engine path, Economic Gatekeeper, 503 thermal lock / 413 context limits, `/system/*` discovery APIs, rotating ops + safety logs, and a reference agent client — all under `AETHER_ENGINE=mock`.
+
+**What is not verified:** Real Fast-Swap with reliable VRAM teardown and KV-cache survival on 8 GB cards (e.g. RTX 4060). That remains a gated research track (Wedge B). Do not treat it as production.
 
 ---
 
 ## Why this exists
 
-On 8–16 GB cards, static layer pinning forces a painful trade-off: either you keep everything in VRAM (and OOM on long context) or you run a heavy hybrid and accept slow generation. Agents that switch between light routing and heavy coding amplify the problem.
+Local agents on 8–16 GB GPUs fail in predictable ways: runaway generation, naive retries, context blow-ups, and strategy thrash that OOMs or thermally stresses the only card you have.
 
-AetherForge makes the strategy change itself cheap enough that agents can request it. The Economic Gatekeeper rejects swaps whose latency cost exceeds the expected throughput gain.
+AetherForge’s job in the current sprint is not “move experts in VRAM.” It is:
 
----
+1. Give agents a stable API to inspect health and request strategy changes.
+2. Reject work that violates safety ceilings (temperature, VRAM pressure, context size).
+3. Leave an audit trail when the control plane intervenes.
+4. Allow full development and CI without CUDA via a Mock engine.
 
-## Features (what actually works today)
-
-- **Fast-Swap with KV survival** — Tear down and reload with a different layer count; context is restored from system RAM.
-- **Economic Gatekeeper** — Deterministic ROI check before any hardware change.
-- **Configuration-driven** — All paths, layer counts, TPS profiles, and heuristics live in `.env`. No magic numbers in source.
-- **Agent-discoverable** — `/system/tools` exports a live OpenAI function schema generated from the same Pydantic models the API uses.
-- **Fail-fast startup** — Missing model path aborts with a clear error instead of silent simulation mode.
+Long-term goal (research): agent-aware strategy switching with measured Fast-Swap / KV survival on consumer hardware. That is **not** the default claim of this README.
 
 ---
 
-## Quick Start
+## Verified features (Wedge A)
 
-### Prerequisites
+| Feature | Status |
+|--------|--------|
+| FastAPI control plane (`/generate`, `/system/strategy`, `/system/metrics`, `/system/cache`, `/system/tools`) | Verified under Mock |
+| Economic Gatekeeper (accept/reject swaps by ROI heuristics + EMA TPS) | Verified under Mock |
+| Thermal / VRAM watchdog → `emergency_thermal_lock` → **503** | Verified (Mock chaos + forced lock tests) |
+| Context ceiling → **413** | Verified in route logic / tests |
+| OpenAI-style tool schema at `GET /system/tools` | Verified |
+| Rotating logs: `logs/aetherforge.log`, `logs/hardware_safety.log` | Verified |
+| Pytest suite (`tests/test_hypervisor.py`) | 3 tests, Mock-forced |
+| Reference client `scripts/safe_agent.py` | Discovers tools, negotiates strategy, handles 503/413 |
+| Lazy engine factory (Mock boots without importing CUDA bindings) | Required for headless / no-GPU machines |
 
-- Python 3.10+
-- CUDA toolkit matching your GPU (for accelerated `llama-cpp-python`)
-- A GGUF model (defaults assume DeepSeek-Coder-V2-Lite-Instruct Q4_K_M)
+---
+
+## Explicit non-claims
+
+- **Fast-Swap + KV survival on real GPUs** is experimental. `LlamaEngine` implements reload + `save_state` / `load_state` with best-effort teardown; VRAM barriers are **not** proven on 8 GB hardware.
+- **True in-memory MoE expert movement** is not implemented. `ktransformers` support is a stub.
+- Default docs and demos assume **Mock** unless you deliberately opt into `llama` after accepting hardware risk.
+
+---
+
+## Quick start (safe path — Mock)
 
 ```bash
 git clone https://github.com/jayjz/aetherforge.git
@@ -45,95 +61,156 @@ cd aetherforge
 python -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+pip install pytest httpx   # for tests
 ```
 
-> **Important:** `llama-cpp-python` must be built with CUDA support.  
-> Example (Linux):  
-> `CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install llama-cpp-python --force-reinstall --no-cache-dir`
+### Configure for Mock
 
-### Configuration
+`.env` (recommended):
 
-```bash
-cp .env.example .env
-# Edit .env — set MODEL_PATH and calibrate layer counts / TPS for your hardware
+```env
+AETHER_ENGINE=mock
+AETHER_CHAOS=false
+API_HOST=127.0.0.1
+API_PORT=8000
 ```
 
-Defaults are calibrated for an **RTX 4060 8 GB + DeepSeek-Lite**. Change them for other cards or models so the Gatekeeper math stays accurate.
+`config.yaml` must use the **nested** schema (`model`, `strategies`, `gatekeeper`, `server`). Flat top-level keys are ignored by the loader. Set `server.engine: mock` as a second lock if desired.
 
-### Run
+### Tests
 
 ```bash
+export AETHER_ENGINE=mock
+export AETHER_CHAOS=false
+python -m pytest tests/ -v
+```
+
+### Run control plane + demo agent
+
+Terminal 1:
+
+```bash
+export AETHER_ENGINE=mock
+export AETHER_CHAOS=false
 uvicorn src.server:app --host 127.0.0.1 --port 8000
 ```
 
-### Example agent call
+Terminal 2:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/system/strategy \
-  -H "Content-Type: application/json" \
-  -d '{
-    "mode": "high_fidelity",
-    "context_text": "long conversation history here...",
-    "expected_output_tokens": 800
-  }'
+python scripts/safe_agent.py
 ```
 
-Or let an agent discover the tool via `GET /system/tools`.
+Inspect:
+
+```bash
+tail -f logs/aetherforge.log
+tail -f logs/hardware_safety.log
+```
 
 ---
 
 ## Architecture (current)
 
 ```
-Agent ──► FastAPI Control Plane
-              │
-              ├─ Economic Gatekeeper (ROI decision)
-              ├─ Cache Manager (topology + state)
-              └─ AetherEngine
-                    │
-                    └─ llama.cpp (Fast-Swap + KV save/load)
+Agent (safe_agent.py / your stack)
+        │
+        ▼
+FastAPI control plane
+  ├─ Economic Gatekeeper (swap ROI)
+  ├─ Hardware monitor + async watchdog
+  ├─ Thermal / VRAM lock → 503
+  ├─ Context ceiling → 413
+  ├─ Rotating ops + safety logs
+  └─ Engine factory (lazy)
+        ├─ mock          ← default / CI / no-GPU
+        ├─ llama         ← experimental real path
+        └─ ktransformers ← stub
 ```
-
-The production path intentionally uses a full model reload + state restore. This is reliable and works with stock `llama-cpp-python`. Research into true runtime expert movement lives on separate branches.
 
 ---
 
-## Performance reference
+## API surface (agent-facing)
 
-Measured on RTX 4060 8 GB, DeepSeek-Coder-V2-Lite-Instruct Q4_K_M:
+| Method | Path | Role |
+|--------|------|------|
+| GET | `/system/tools` | OpenAI-compatible tool schema for strategy requests |
+| GET | `/system/metrics` | Strategy, thermal lock, VRAM pressure, vitals, TPS baselines |
+| GET | `/system/cache` | Cache / strategy / engine availability snapshot |
+| POST | `/system/strategy` | Request mode change; Gatekeeper may reject |
+| POST | `/generate` | Generate with optional strategy; respects locks and limits |
 
-| Strategy          | Layers in VRAM | Approx. t/s | Typical use                  |
-|-------------------|----------------|-------------|------------------------------|
-| high_fidelity     | 15             | ~23.7       | Coding, multi-step reasoning |
-| balanced          | 10             | ~11.1       | Normal agent dialog          |
-| aggressive_quant  | 2              | ~12.1       | Routing / light tasks        |
+**Agent contract:** treat **503** as temporary hardware lock (backoff / wait on metrics), **413** as “shrink context,” and Gatekeeper `rejected` as “keep current mode.”
 
-Swap cost is typically 5–8 s (dominated by reload). Because the KV-cache survives, the prefill penalty on the next generation is largely eliminated.
+---
+
+## Real engine (experimental — not default)
+
+Only if you accept unproven Fast-Swap risk on your hardware:
+
+```bash
+export AETHER_ENGINE=llama
+# CUDA-enabled llama-cpp-python required
+# GGUF path must exist or boot fails hard (no silent Mock fallback when forced to llama)
+```
+
+Requirements for a future Wedge B experiment (not this sprint): written protocol, small model / low layer counts, measured VRAM, explicit abort rules. Until then, leave the muscle dark.
+
+---
+
+## Project layout
+
+```
+src/
+  server.py              # Control plane, watchdog, routes
+  config.py              # Nested YAML + env settings
+  logger.py              # Console + rotating ops/safety logs
+  hardware_monitor.py    # NVML or simulated vitals (+ optional chaos)
+  engines/
+    __init__.py          # Lazy create_engine
+    base.py              # BaseAetherEngine contract
+    mock_engine.py       # Headless muscle
+    llama_engine.py      # Experimental real muscle
+  ...
+scripts/safe_agent.py    # Reference external agent
+tests/test_hypervisor.py # Mock control-plane tests
+logs/                    # Created at runtime (gitignored)
+```
 
 ---
 
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md) for the current phased plan.
+**This sprint (Wedge A — continue)**  
+- Keep Mock as the default story and CI path  
+- Harden docs, agent examples, and 503/413 client patterns  
+- Improve observability and Gatekeeper messaging honesty  
+- No unsupervised real Fast-Swap on the 4060  
 
-- **v0.4.0 (now)** — Centralized config, validation, Fail-fast, tool schema, Fast-Swap + KV survival.
-- Next — Mock Engine for CI, better CUDA onboarding, real LangGraph/n8n examples.
-- Research track — True dynamic expert movement (separate from the production path).
-### Live Telemetry & Learning
-AetherForge does not rely blindly on static configuration. The `EconomicGatekeeper` uses an Exponential Moving Average (EMA) to track your actual generation speeds. If your GPU thermally throttles, the Gatekeeper automatically adjusts its ROI math to account for the degraded performance. 
-*   **Smoothing (`TELEMETRY_ALPHA`):** Defaults to 0.3 (30% new measurement, 70% historical) to ignore transient OS spikes.
-*   **Clamping:** Hard floors and ceilings (`TPS_MIN_CLAMP` / `TPS_MAX_CLAMP`) prevent a single crashed generation from permanently corrupting the routing logic.
----
+**Later (Wedge B — gated research)**  
+- Measured Fast-Swap + KV survival protocol on consumer GPUs  
+- Stronger VRAM release / process isolation if bindings leak  
+- Only then reconsider “memory hypervisor” as a primary claim  
 
-## Project guidelines
+**Research**  
+- True dynamic expert placement (separate branches; not production path)
 
-See [PROJECTGUIDELINES.md](PROJECTGUIDELINES.md) for architecture principles, branching rules, decision log, and the “stranger test” definition of done.
+See `ROADMAP.md` and `PROJECTGUIDELINES.md` for process detail; prefer this README when they conflict with verified status.
 
 ---
 
 ## Contributing
 
-Issues and PRs are welcome. Keep `main` always runnable. Prefer short-lived feature branches and conventional commits. Research experiments should stay on `research/*` branches until stable.
+- Keep `main` runnable under **Mock** without a GPU.  
+- Prefer short-lived feature branches and conventional commits.  
+- Real-engine experiments stay opt-in and documented as unverified until measured.  
+- Do not commit `logs/` or local GGUF weights.
+
+---
+
+## License
+
+MIT
 ```
 
 ---
