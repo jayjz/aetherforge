@@ -1,27 +1,25 @@
-import os
-from .base import BaseAetherEngine
-from .mock_engine import MockAetherEngine
-from .kt_engine import KTransformersEngine
-from .llama_engine import LlamaEngine 
+"""
+AetherForge Engine Factory
+==========================
+Lazy-loads hardware engines to ensure the Mock control plane 
+can boot on systems lacking CUDA or C++ bindings.
+"""
 
-def create_engine(engine_type: str, model_path: str, vram_budget_mb: int, n_ctx: int) -> BaseAetherEngine:
-    """
-    Factory routes to the correct hardware backend.
-    Includes defensive fallbacks to protect the control plane.
-    """
+def create_engine(engine_type: str, model_path: str, vram_budget_mb: float, n_ctx: int):
+    engine_type = engine_type.lower()
+    
     if engine_type == "mock":
+        from .mock_engine import MockAetherEngine
         return MockAetherEngine(model_path, vram_budget_mb, n_ctx)
         
-    elif engine_type == "ktransformers":
-        if os.getenv("ENABLE_KTRANSFORMERS", "").lower() == "true":
-            print("[Factory] ktransformers flag detected. Routing to KT Engine.")
-            return KTransformersEngine(model_path, vram_budget_mb, n_ctx)
-        else:
-            print("[Factory] ENABLE_KTRANSFORMERS is not true. Falling back to LlamaEngine.")
-            return LlamaEngine(model_path, vram_budget_mb, n_ctx)
-            
     elif engine_type == "llama":
+        from .llama_engine import LlamaEngine
         return LlamaEngine(model_path, vram_budget_mb, n_ctx)
         
+    elif engine_type == "ktransformers":
+        # Stub kept for future MoE research
+        from .ktransformers_engine import KTransformersEngine
+        return KTransformersEngine(model_path, vram_budget_mb, n_ctx)
+        
     else:
-        raise ValueError(f"Unknown engine type requested: {engine_type}")
+        raise ValueError(f"Unknown AETHER_ENGINE type: {engine_type}")

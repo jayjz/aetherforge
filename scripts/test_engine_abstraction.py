@@ -6,6 +6,13 @@ and that the returned object strictly adheres to the BaseAetherEngine contract.
 """
 
 import sys
+import os
+
+# Dynamically inject the project root into sys.path so 'src' resolves correctly
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from src.engines import create_engine
 from src.engines.base import BaseAetherEngine
 
@@ -47,9 +54,9 @@ def run_abstraction_tests():
         assert "inject_seconds" in metrics and isinstance(metrics["inject_seconds"], float), "Missing/invalid 'inject_seconds'."
         print(" -> [PASS] apply_strategy returned perfect dictionary shape.")
 
-        # 4. Test generate Contract
-        print("\n -> Testing generate contract...")
-        gen_result = engine.generate(prompt="Test prompt", max_tokens=10)
+        # 4. Test generate Contract (Now including temperature)
+        print("\n -> Testing generate contract (with new temperature parameter)...")
+        gen_result = engine.generate(prompt="Test prompt", max_tokens=10, temperature=0.5)
         
         assert isinstance(gen_result, dict), "generate must return a dictionary."
         assert "text" in gen_result and isinstance(gen_result["text"], str), "Missing or invalid 'text' key."
@@ -59,7 +66,7 @@ def run_abstraction_tests():
         assert "tokens_generated" in gen_metrics and isinstance(gen_metrics["tokens_generated"], int), "Missing/invalid 'tokens_generated'."
         assert "time_seconds" in gen_metrics and isinstance(gen_metrics["time_seconds"], float), "Missing/invalid 'time_seconds'."
         assert "tokens_per_second" in gen_metrics and isinstance(gen_metrics["tokens_per_second"], (float, int)), "Missing/invalid 'tokens_per_second'."
-        print(" -> [PASS] generate returned perfect dictionary shape.")
+        print(" -> [PASS] generate returned perfect dictionary shape and accepted temperature.")
 
         print("\n✅ ALL ABSTRACTION CONTRACT TESTS PASSED.")
         
