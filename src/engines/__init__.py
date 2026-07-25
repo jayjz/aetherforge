@@ -18,7 +18,7 @@ def create_engine(engine_type: str, model_path: str, vram_budget_mb: float, n_ct
         
     elif engine_type == "ktransformers":
         # Stub kept for future MoE research
-        from .ktransformers_engine import KTransformersEngine
+        from .kt_engine import KTransformersEngine
         return KTransformersEngine(model_path, vram_budget_mb, n_ctx)
         
     else:
