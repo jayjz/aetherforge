@@ -6,60 +6,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+
 ## [0.6.0] - 2026-07-25
-### 🚦 Wedge A: Hardware Safety Layer & Mock Control Plane
-**Strategic Pivot:** AetherForge is now officially positioned as a Hardware-Aware Safety Layer for local AI agents. The dynamic memory hypervisor claims (Fast-Swap / KV Survival) have been explicitly demoted to an experimental research track (Wedge B) until C-level VRAM barriers are mathematically proven on 8GB consumer hardware. 
+
+### Wedge A: Hardware Safety Layer and Mock Control Plane
+
+**Strategic positioning:** AetherForge on `main` is positioned as a **hardware-aware safety and control plane** for local AI agents. Fast-Swap / KV-cache survival on real 8 GB GPUs is an **experimental research track (Wedge B)** and is not a verified production claim.
 
 ### Added
-- **Asynchronous 3-Stream Logging (`src/logger.py`):** Replaced brittle `print()` statements with a robust `RotatingFileHandler` architecture. 
-  - `logs/aetherforge.log`: Captures all API traffic, TPS metrics, and Gatekeeper ROI math.
-  - `logs/hardware_safety.log`: Isolated audit trail for 503 thermal locks and hardware warnings.
-- **Reference Agent Client (`scripts/safe_agent.py`):** A fully operational Python client demonstrating tool discovery, strategy negotiation, and graceful 503 (Thermal) / 413 (Context) standby/recovery loops.
-- **Dynamic Tool Discovery:** `/system/tools` now emits an OpenAI-compatible JSON schema directly from the Pydantic `StrategyPayload`, allowing autonomous agents to discover how to regulate their own VRAM footprints.
-- **Hardware Circuit Breakers:** Strict enforcement of 503 (Thermal Lock) and 413 (Context Ceiling) rejections across `/generate` and `/system/strategy` routes.
+
+- **Rotating file logging (`src/logger.py`):** Replaced ad-hoc `print()` control-plane output with namespaced loggers and rotating files.
+  - `logs/aetherforge.log` — API, Gatekeeper, and operational events
+  - `logs/hardware_safety.log` — WARNING+ safety-oriented events (including thermal lock signals)
+- **Reference agent client (`scripts/safe_agent.py`):** Discovers `/system/tools`, checks metrics, negotiates strategy, runs generation, and demonstrates handling of **503** (thermal lock) and **413** (context ceiling).
+- **Hypervisor integration tests (`tests/test_hypervisor.py`):** Mock-forced coverage for system discovery routes, Gatekeeper accept/reject matrix, and thermal lock → 503 enforcement on `/generate` and `/system/strategy`.
+- **Engine environment controls:** `AETHER_ENGINE` and `AETHER_CHAOS` for headless development and deterministic tests.
+- **Hardware circuit-breaker enforcement:** Route-level **503** when `emergency_thermal_lock` is active; **413** when prompt tokens exceed the configured safety ceiling.
 
 ### Changed
-- **Engine Factory Lazy-Loading:** `src/engines/__init__.py` now properly lazy-loads dependencies. The Mock control plane can now boot and run the full test suite on headless/Linux machines without `llama-cpp-python` or CUDA toolkits installed.
-- **LlamaEngine Structural Repair:** Restored the core contract (`generate()` method, temperature propagation, try/except fallbacks) to `src/engines/llama_engine.py`. Added a best-effort `cuCtxSynchronize()` barrier, though 8GB fast-swap remains unverified for production.
-- **Config Loader Discipline:** `src/config.py` now strictly enforces the nested YAML schema. Legacy flat keys that created false configuration confidence have been documented as dead weight.
-- **README Alignment:** Aggressively rewrote the project documentation to match the verified code reality, establishing the safe Mock path as the default execution method.
 
-### Removed
-- Unreliable standard output `print()` calls across the API, replacing them with proper `api`, `watchdog`, and `gatekeeper` logger namespaces.
-- Eager CUDA imports that previously crashed the API on non-GPU environments.
+- **Lazy engine factory:** Engine backends are imported only when selected so the Mock path can boot and test without CUDA or `llama-cpp-python` import side effects.
+- **LlamaEngine contract repair:** Restored `generate()`, temperature propagation, strategy mapping, and best-effort teardown/recovery paths. Real Fast-Swap on 8 GB hardware remains **unverified**.
+- **Config discipline:** Nested YAML schema is the supported configuration shape; flat legacy keys are not authoritative.
+- **README:** Rewritten to match verified Mock/safety reality and to demote unverified Fast-Swap claims.
+
+### Fixed
+
+- Control plane no longer depends on eager CUDA/engine imports for Mock operation.
+- Thermal spoof / permanent lock artifacts from earlier burn-in experiments removed from the default path.
+
+### Notes
+
+- Logging uses the standard library `logging` module with rotating file handlers (synchronous I/O). Suitable for current control-plane QPS; not a claim of fully asynchronous logging infrastructure.
+- Merging control-plane hardening to `main` does **not** authorize unsupervised real Fast-Swap on consumer 8 GB GPUs.
+
+---
 
 ## [0.5.0] - 2026-07-19
 
 ### Added
-- **Dynamic YAML Configuration**: Implemented a custom YAML flattener utilizing Pydantic in `src/config.py` to safely parse `config.yaml` with a robust fallback architecture.
-- **Hardware Profile Presets**: Created `config.yaml.example` specifically calibrated for consumer-grade rigs (RTX 4060 8GB VRAM + 32GB RAM).
-- **Hardened Containerization**: Introduced a modernized `Dockerfile` enforcing `GGML_CUDA=on` to guarantee native GPU acceleration, along with a production-ready `docker-compose.yml`.
-- **Harness Validation**: Added `scripts/test_engine_abstraction.py` to automatically assert and enforce telemetry dictionary shapes and types across all base engine contracts.
+
+- Dynamic YAML configuration loading via Pydantic in `src/config.py`.
+- `config.yaml.example` calibrated toward consumer profiles (e.g. RTX 4060-class).
+- Docker / compose scaffolding aimed at CUDA builds.
+- Engine abstraction harness scripts under `scripts/`.
 
 ### Changed
-- **Engine Factory Architecture**: Decoupled the FastAPI control plane from specific backend runtimes by wrapping backends in an abstraction layer (`BaseAetherEngine` interface via `create_engine` factory pattern).
-- **Directory Topology**: Structured backend isolation by migrating inference layers into isolated modules under `src/engines/`.
+
+- Control plane decoupled from a single backend via `BaseAetherEngine` and `create_engine`.
+- Inference backends organized under `src/engines/`.
 
 ### Fixed
-- **Contract Enforcement**: Refactored `MockAetherEngine` to explicitly inherit from `BaseAetherEngine`, resolving integration gaps with the automated contract test suite.
+
+- Mock engine aligned to the shared engine contract for harness checks.
 
 ---
 
 ## [0.4.2] - 2026-07-17
 
 ### Added
-- **Silicon Telemetry**: Integrated `HardwareMonitor` backed by `pynvml` to pull live physical GPU temperature and allocation boundaries.
-- **Circuit Breakers**: Added 503 Service Unavailable route-level thermal blocks protecting the GPU against runaway loads.
-- **Proactive Preflights**: Introduced a token count pre-check on the `/generate` endpoint, returning a 413 Payload Too Large error before ingestion when thresholds are breached.
-- **State Mutual Exclusion**: Added an asynchronous execution lock (`asyncio.Lock`) inside `server.py` to guarantee thread-safe VRAM strategy transitions.
+
+- `HardwareMonitor` with NVML when available.
+- Route-level thermal **503** protection.
+- Token pre-check **413** on oversized generation context.
+- `asyncio.Lock` around strategy-sensitive execution paths.
 
 ### Changed
-- **Telemetry Processing**: Connected learned wall-clock serialization costs and tokens-per-second (TPS) values to the `EconomicGatekeeper` via Exponential Moving Average (EMA) tuning.
+
+- Gatekeeper telemetry updated with EMA-style learning of measured latencies and TPS where wired.
 
 ---
 
 ## [0.4.0] - 2026-07-06
 
 ### Added
-- **Control Plane Core**: Established core FastAPI infrastructure, custom Pydantic schemas, and initial `EconomicGatekeeper` evaluation logic.
-- **Cache Management**: Deployed baseline `AetherCacheManager` to track tensor locations across physical RAM and VRAM.
+
+- FastAPI control plane core, Pydantic schemas, and initial Economic Gatekeeper logic.
+- Baseline `AetherCacheManager` for tracking expert/tensor placement metadata.
