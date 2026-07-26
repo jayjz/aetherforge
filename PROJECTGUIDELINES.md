@@ -1,80 +1,115 @@
 # PROJECTGUIDELINES.md — AetherForge
 
 **Living guidelines for architecture, decisions, and engineering standards.**  
-*Last updated: 2026-07-19*
+*Last updated: 2026-07-26*
 
 ## 1. Vision & Strategy
 
-**Vision**: AetherForge is the premier **agent-aware hypervisor** for elastic local MoE inference. It enables autonomous agents to dynamically manage VRAM/experts on consumer hardware (8–24 GB VRAM), minimizing prefill penalties and maximizing throughput for long-context, multi-step workflows.
+**Current phase (Wedge A — active):**  
+AetherForge is a **hardware-aware safety and control plane** for local AI agents on consumer GPUs. It sits between agents and local inference, providing strategy negotiation, Economic Gatekeeper decisions, thermal/VRAM circuit breakers, context ceilings, tool discovery, and durable audit logs. The default, documented, and CI path is **Mock-capable** and must run without CUDA.
 
-**Core Differentiator**: Combines reliable control-plane orchestration (Economic Gatekeeper, strategy switching) with high-performance heterogeneous kernels (via ktransformers integration) and cutting-edge research (HOBBIT-inspired mixed-precision dynamic experts).
+**Long-term direction (Wedge B / research — gated):**  
+Agent-aware strategy switching with *measured* Fast-Swap and KV-cache survival on consumer hardware, plus optional heterogeneous kernels. These capabilities are **not** default product claims until proven under a written experiment protocol.
 
-**Integration Strategy**: 
-- Production: Fast-Swap + KV survival + Gatekeeper.
-- Accelerated: ktransformers CPU/GPU expert scheduling + FP8/AMX optimizations.
-- Research: Full HOBBIT-style token-level dynamic loading, prefetch, and multidimensional caching.
+**What we do not claim on `main` without evidence:**
+- Production-ready Fast-Swap with reliable VRAM teardown on 8 GB cards
+- Guaranteed KV survival across strategy changes on real GPUs
+- True in-memory MoE expert movement or production ktransformers integration
 
-**Primary Success Metrics (Product-Oriented)**:
-- New user installs and runs an agent-driven strategy/expert change in <10 minutes.
-- ≥2x effective agent throughput (prefill + decode) vs. static baselines on 8-16GB GPUs.
-- Seamless integration with ≥3 agent frameworks (LangGraph, CrewAI, SGLang).
-- 500+ GitHub stars within 6 months through usability and demonstrated value.
-- Zero critical bugs in production paths; measurable accuracy preservation in dynamic modes.
+**Near-term success metrics (Wedge A):**
+- A stranger can clone, set `AETHER_ENGINE=mock`, run tests, and exercise the control plane in under 15 minutes without a GPU
+- 503 (thermal lock) and 413 (context ceiling) behavior is tested and documented for agents
+- README, this file, ROADMAP, and CHANGELOG agree on verified vs experimental status
+- `main` never requires CUDA to import or boot the Mock path (lazy engine loading)
+
+**Later metrics (only after Wedge B evidence):**
+- Measured Fast-Swap cost and KV fidelity on disclosed hardware
+- Agent throughput comparisons vs static baselines with full methodology
+- Multi-framework examples (LangGraph, CrewAI, etc.) built on the verified safety contract
 
 ## 2. Architecture Principles
 
-1. **Reliability & Agent-First** — Production paths prioritize stability and discoverability (OpenAI tool schemas, telemetry). Research only lands on `main` when stable/configurable.
-2. **Separation of Concerns** — Python control plane (decisions, Gatekeeper) vs. high-perf kernels (ktransformers/llama.cpp C++/CUDA).
-3. **Config-Driven & Observable** — All knobs in YAML/ENV. Real EMA telemetry over static tables.
-4. **Pragmatic Hybrid** — Leverage ktransformers for expert offload/scheduling; extend with HOBBIT techniques.
-5. **Usability & Reproducibility** — Docker-first, auto-detection, honest benchmarks, minimal source edits.
+1. **Safety over ambition** — Prefer abort, 503, or fallback over OOM, silent corruption, or thermal thrash. Single-GPU user hardware is treated as mission-critical.
+2. **Mock-first `main`** — The control plane must be fully developable and testable headless. CUDA and real GGUF loads are opt-in.
+3. **Honesty in claims** — Documentation matches verified behavior. Experimental paths are labeled experimental.
+4. **Separation of concerns** — Python control plane (API, Gatekeeper, watchdog, logging) vs engine backends (Mock / Llama / future kernels).
+5. **Lazy loading** — Engine implementations are imported only when selected so Mock boots without `llama-cpp-python` or CUDA bindings.
+6. **Config-driven & observable** — Nested YAML + environment overrides; rotating ops and safety logs; EMA telemetry where applicable.
+7. **Agent-first contracts** — OpenAI-style tool schemas, explicit 503/413 semantics, and Gatekeeper accept/reject responses agents can handle.
+8. **Research stays gated** — HOBBIT-style dynamic experts, ktransformers depth, and real Fast-Swap experiments live behind flags/branches until measured.
 
 ## 3. Branching, Releases & Collaboration
 
-- `main` always runnable and production-grade.
+- `main` is always **Mock-runnable** without a GPU and must pass the hypervisor test suite under `AETHER_ENGINE=mock`.
 - Short-lived branches: `feat/`, `fix/`, `chore/`, `docs/`, `research/`.
-- All changes via PR (self-review + rationale even solo). Conventional commits.
-- Semantic versioning + `CHANGELOG.md`. Tag meaningful releases.
-- Research on `research/*`; extract cleanly after validation.
-- **Contributors**: See `CONTRIBUTING.md`. Welcome issues/PRs. Maintainers triage promptly.
+- All meaningful changes via PR (self-review + rationale even when solo). Conventional commits.
+- Semantic versioning + `CHANGELOG.md`. Tag only when docs and behavior align.
+- Real-engine and kernel experiments: `research/*` or explicit opt-in env flags; do not redefine default product claims in the same PR without evidence.
+- Prefer this document and README over outdated roadmap language when they conflict; then fix the outdated file in the same sprint.
 
 ## 4. Coding & Quality Standards
 
-- Python 3.10+ (control plane), type hints, Pydantic v2.
-- C++/CUDA for kernels (align with ktransformers style).
-- Comprehensive tests: unit + integration (empirical scripts) + CI (GitHub Actions).
-- No magic numbers/hard-coded paths. Full configuration.
-- Security: Input validation, resource limits, no untrusted model execution.
-- Documentation: Update README, ROADMAP, this file with every phase change.
+- Python 3.10+ for the control plane; type hints; Pydantic v2.
+- No eager CUDA or engine imports in factory/package init paths used by Mock.
+- Nested `config.yaml` schema only (flat legacy keys are ignored and must not be documented as live).
+- Tests: at minimum Mock integration tests for discovery routes, Gatekeeper matrix, and thermal 503 enforcement. Expand before claiming production readiness for real engines.
+- No magic numbers for safety limits; bound critical thresholds in settings.
+- Security posture: validate inputs, enforce resource ceilings, never execute untrusted models as a side effect of boot.
+- Documentation: update README, ROADMAP, CHANGELOG, and this file when phase or verified status changes.
 
 ## 5. Decision Log (Append-Only)
 
-**2026-07-19** — Adopted unified strategy: AetherForge as agent hypervisor leveraging ktransformers kernels + HOBBIT research. Prioritize packaging, integrations, and benchmarks for community traction.  
-**2026-07-17** — (Prior entries retained)...
+**2026-07-26** — Aligned PROJECTGUIDELINES and ROADMAP with Wedge A. Formalized Mock-first `main`, lazy engine loading, and gated Wedge B criteria.  
+**2026-07-24/25** — Adopted **Wedge A**: ship and harden the hardware safety control plane (Mock, Gatekeeper, 503/413, logging, `safe_agent.py`). Demoted Fast-Swap / KV survival on 8 GB hardware to experimental **Wedge B** pending a written protocol and measurements. README rewritten to match verified reality. Feature branch control-plane hardening merged to `main`.  
+**2026-07-23** — Control-plane hardening under Mock: engine toggles (`AETHER_ENGINE`, `AETHER_CHAOS`), sticky thermal chaos verification, contract/temperature wiring, hypervisor pytest suite.  
+**2026-07-19** — Adopted unified long-range strategy: agent hypervisor direction leveraging ktransformers kernels + HOBBIT research. Packaging and benchmarks prioritized for future traction. *(Historical intent; not current default product claim.)*  
+**2026-07-17** — Thermal watchdog, circuit breakers, and related safety scaffolding introduced on the control plane.
 
 ## 6. Research References
 
-- HOBBIT (arXiv:2411.01433): Mixed-precision dynamic loading, prefetch, caching.
-- ktransformers: Heterogeneous MoE scheduling, FP8, SGLang integration.
-- llama.cpp ecosystem & community experiments (expert cache, hybrid offload).
+- HOBBIT (arXiv:2411.01433): Mixed-precision dynamic loading, prefetch, caching — research track only until implemented and measured.
+- ktransformers: Heterogeneous MoE scheduling — stub/adapter only on `main`; not a production dependency.
+- llama.cpp / llama-cpp-python: Fast-Swap and state save/load experiments — opt-in engine path.
 
 ## 7. Testing, Benchmarking & Release Criteria
 
-- Hardware disclosure mandatory in PRs/benchmarks.
-- Baselines: vanilla llama.cpp, static offload, prior versions.
-- Metrics: t/s (prefill/decode), swap/expert load latency, context fidelity, Gatekeeper decisions, accuracy (where applicable).
-- Before "production": Docker support, end-to-end agent examples, CI passing, updated docs.
+### Wedge A cut (current bar for `main`)
+
+- [ ] `AETHER_ENGINE=mock` boots on a machine without a GPU
+- [ ] `python -m pytest tests/ -v` passes
+- [ ] README and this file do not claim verified Fast-Swap/KV survival on 8 GB
+- [ ] 503 thermal lock and Gatekeeper reject paths remain covered by tests
+- [ ] Real engine remains opt-in and labeled experimental
+- [ ] Logs directory is gitignored; no secrets or GGUF weights committed
+
+### Wedge B / real-engine claims (additional bar)
+
+- [ ] Written experiment protocol (model size, layer counts, abort rules, hardware disclosure)
+- [ ] Measured VRAM behavior across swaps; no reliance on unproven teardown myths
+- [ ] Documented failure modes (OOM, blank KV, recovery path)
+- [ ] Hardware disclosure in any benchmark or PR claiming speedups
+
+### General
+
+- Hardware disclosure mandatory in PRs that touch real engines or publish numbers.
+- Baselines and methodology required before comparative claims.
+- Prefer honest “unverified” over optimistic marketing.
 
 ## 8. Packaging, Community & Portfolio Standards
 
-- Deliverables: Docker, pip, HF demos.
-- Community: Responsive issues, Discord/Reddit/X engagement, clear `CONTRIBUTING.md`.
-- Professionalism: Clean history, professional READMEs, reproducible benchmarks.
+- Default demos and docs lead with Mock + `scripts/safe_agent.py`.
+- Docker and CUDA images are optional accelerators, not the definition of “works.”
+- Portfolio and public posts must match verified status (safety control plane first).
+- Clean history, professional docs, reproducible steps for headless install.
 
 ## 9. Open Risks & Mitigations
 
-- Kernel maintenance (mitigate via upstream contributions).
-- Hardware fragmentation (auto-config + profiles).
-- Research instability (strict gating to main).
+| Risk | Mitigation |
+|------|------------|
+| Real Fast-Swap OOM / driver mess on 8 GB | Keep `llama` opt-in; require experiment protocol; prefer process isolation later |
+| Docs drift from code | Phase changes update README + this file + ROADMAP + CHANGELOG together |
+| Eager imports break no-GPU CI | Lazy factory; Mock-first tests |
+| Agents treat 503 as fatal | Document agent contract; improve client backoff examples |
+| Scope creep into unproven hypervisor claims | Wedge A sprint discipline; research branches for ambition |
 
 *This is a living document. Update when reality changes.*
