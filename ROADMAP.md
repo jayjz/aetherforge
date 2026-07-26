@@ -1,82 +1,97 @@
-# 🗺️ AetherForge Roadmap
+# AetherForge Roadmap
 
-**Last updated: 2026-07-19**
+**Last updated: 2026-07-26**
 
-AetherForge delivers agent-optimized elastic MoE inference by combining intelligent hypervisor control with high-performance heterogeneous kernels and dynamic expert research.
+AetherForge provides a hardware-aware **safety and control plane** for local AI agents, with a gated research path toward measured strategy switching (Fast-Swap / KV survival) on consumer GPUs.
 
-**Unified Stack**: AetherForge (orchestration) + ktransformers (kernels) + HOBBIT techniques (dynamic experts).
-
----
-
-## Current Status (v0.4.x)
-
-**Production (main)**:
-- [x] FastAPI control plane + Pydantic schemas.
-- [x] Strategy modes with Economic Gatekeeper + KV survival.
-- [x] Dynamic OpenAI tool schema.
-- [x] Basic ktransformers alignment hooks.
-
-**In Progress**: Configuration hardening, initial HOBBIT prototypes.
+**Default product story (Wedge A):** Mock-runnable control plane — Gatekeeper, thermal/VRAM circuit breakers, context limits, tool discovery, audit logs, reference agent client.  
+**Research story (Wedge B):** Measured real-engine Fast-Swap and related kernel work — not the default claim until proven.
 
 ---
 
-## Phase 0: Foundation & Unification (v0.4.0 — Now)
+## Current Status (main — Wedge A)
 
-**Goal**: Production-ready base with ktransformers integration.
+**Verified on main under Mock:**
+- [x] FastAPI control plane + Pydantic schemas
+- [x] Economic Gatekeeper (accept / reject strategy swaps)
+- [x] Thermal / VRAM watchdog → emergency lock → **503**
+- [x] Context ceiling → **413**
+- [x] OpenAI-compatible tool schema (`GET /system/tools`)
+- [x] Rotating ops + safety logging
+- [x] Hypervisor pytest suite (discovery, Gatekeeper matrix, thermal lock)
+- [x] Reference client `scripts/safe_agent.py`
+- [x] Lazy engine factory (Mock without CUDA imports)
+- [x] README aligned to verified reality
 
-- [ ] Full YAML/ENV config system.
-- [ ] ktransformers kernel integration (expert scheduling, FP8/AMX).
-- [ ] Docker + one-click install.
-- [ ] Structured logging, metrics endpoint, auto hardware profiling.
-- [ ] CI/CD + basic unit/integration tests.
-- [ ] Updated docs + initial benchmarks.
-
-**Exit**: Stranger can `docker compose up` and run agent strategy changes reproducibly.
-
----
-
-## Phase 1: Dynamic Experts & Agent Excellence (v0.5.0)
-
-**Goal**: HOBBIT-powered runtime + proven agent value.
-
-- [ ] Token-level dynamic mixed-precision loading & prefetch (HOBBIT).
-- [ ] Multidimensional expert cache policy.
-- [ ] Live telemetry feedback to Gatekeeper.
-- [ ] Production-grade LangGraph/CrewAI/SGLang examples.
-- [ ] Extended benchmarks (consumer GPUs, agent workloads).
-
-**Exit**: Demonstrable 2-5x agent gains; community PRs welcomed.
+**Explicitly experimental / not verified:**
+- [ ] Real `LlamaEngine` Fast-Swap with reliable VRAM teardown on 8 GB
+- [ ] KV-cache survival across real swaps under load
+- [ ] Production ktransformers / HOBBIT dynamic experts
 
 ---
 
-## Phase 2: Ecosystem & Scale (v0.6.0 — v1.0)
+## Phase A — Safety Control Plane (active sprint)
 
-**Goal**: Broad adoption.
+**Goal:** Make the agent-facing safety layer boringly reliable and honestly documented.
 
-- [ ] Multi-model orchestration & relevance caching.
-- [ ] Packaging (PyPI, HF Space, LM Studio/Ollama plugins).
-- [ ] Cross-platform (ROCm, Metal via extensions).
-- [ ] Advanced agent features (persistent memory, self-evolution hooks).
-- [ ] Security audit + broader hardware profiles.
+- [x] Mock engine + headless development path
+- [x] Circuit breakers and Gatekeeper under test
+- [x] Structured logging
+- [x] README honesty pass
+- [ ] PROJECTGUIDELINES + ROADMAP + CHANGELOG fully aligned (this update)
+- [ ] Stronger agent client patterns (retry/backoff examples on 503)
+- [ ] CI green on Mock-only install path
+- [ ] Gatekeeper log copy accuracy (e.g. same-mode reject messaging)
+- [ ] Optional: expand tests (concurrency, strategy+generate under lock)
 
-**Exit**: v1.0 with 500+ stars, production users, upstream contributions.
+**Exit:** A stranger can Mock-boot, test, run `safe_agent.py`, and understand 503/413 without reading source. No doc claims verified Fast-Swap on 8 GB.
+
+---
+
+## Phase B — Measured Real Engine (gated)
+
+**Goal:** Prove or disprove Fast-Swap + KV survival on disclosed consumer hardware under a written protocol.
+
+**Entry criteria:** Phase A exit met; experiment doc exists (model, layers, abort rules, metrics).
+
+- [ ] Tiny/small GGUF protocol (not DeepSeek-first)
+- [ ] Measured VRAM before/after swap; documented teardown behavior
+- [ ] Recovery paths (fallback strategy, hard fail semantics)
+- [ ] Process isolation if bindings leak memory
+- [ ] Benchmarks with full hardware disclosure
+
+**Exit:** Either (1) evidence-backed real-engine guide with known limits, or (2) explicit decision to keep real Fast-Swap research-only.
+
+---
+
+## Phase C — Agent Ecosystem (after B evidence or parallel on Mock)
+
+**Goal:** Deeper agent integrations on the **verified** safety contract.
+
+- [ ] Production-shaped examples (LangGraph / CrewAI / raw tool-calling) using 503/413 semantics
+- [ ] Richer metrics and operator runbooks
+- [ ] Packaging polish (pip/Docker) with Mock default
+
+**Exit:** External agent stacks can adopt the control plane without custom folklore.
 
 ---
 
 ## Later / Research
 
-- KV compression, disk-tier caching.
-- Full custom llama.cpp fork (if needed).
-- Fine-tuning integration (LLaMA-Factory via ktransformers).
-- Cloud-hybrid fallback.
+- True dynamic expert placement (HOBBIT-inspired)
+- Deeper ktransformers integration (if maintained and justified)
+- KV compression, disk-tier caching
+- Broader hardware profiles (with disclosure discipline)
+
+These items do **not** redefine the default product claim until they pass the same honesty bar as Phase B.
 
 ---
 
 ## Versioning & Release Policy
 
-- `0.x`: Iterative, breaking changes documented.
-- `1.0+`: Strict semantic versioning.
-- `main` always runnable. Tag on meaningful milestones.
-- Maintain `CHANGELOG.md` and update portfolio-friendly READMEs.
+- `0.x`: Iterative; breaking changes documented in CHANGELOG
+- Tag when behavior **and** docs agree
+- `main` always Mock-runnable
+- Prefer README + PROJECTGUIDELINES when older roadmap text conflicts; then fix the roadmap
 
-*Focus: Deliver usable value quickly while building toward industry-leading local agent infrastructure.*
+*Focus: ship a trustworthy safety control plane first; earn the right to claim memory-hypervisor behavior with measurements.*
