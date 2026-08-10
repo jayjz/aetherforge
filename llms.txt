@@ -1,0 +1,25 @@
+# AetherForge
+Hardware-aware safety and control plane for local AI agents on consumer GPUs.
+
+## Current State (Wedge A)
+The system is a FastAPI control plane that sits between autonomous agents and local inference engines. 
+Default engine is a Mock Engine for CI/CD and CPU-only environments. Real hardware engines (Llama/KTransformers) are experimental (Wedge B).
+
+## Core Architecture
+1. Agent -> FastAPI Control Plane (`src/server.py`)
+2. Economic Gatekeeper (`src/server.py:EconomicGatekeeper`) - Calculates ROI of VRAM strategy swaps based on latency/TPS.
+3. Hardware Watchdog (`src/server.py:hardware_watchdog`) - Async background task monitoring thermals/VRAM.
+4. Hardware Monitor (`src/hardware_monitor.py`) - Reads NVML or falls back to simulated chaos state.
+5. Engine Factory (`src/engines/__init__.py`) - Lazy-loads inference engines to prevent CUDA crashes on boot.
+
+## Key API Endpoints
+- POST `/generate`: Main inference route. Enforces 503 (thermal/queue lock) and 413 (context ceiling).
+- POST `/system/strategy`: Agent requests VRAM allocation changes. Gatekeeper evaluates ROI.
+- GET `/system/metrics`: Exposes silicon vitals and thermal lock status.
+- GET `/system/tools`: Returns OpenAI-compatible function calling schema for agent discovery.
+
+## Development Rules
+- Never import heavy inference libraries globally. Use lazy loading.
+- Never use `print()`. Use `src.logger.get_logger('namespace')`.
+- All hardware interactions must go through `HardwareMonitor`.
+- Mock engine is the default for all tests and CI.

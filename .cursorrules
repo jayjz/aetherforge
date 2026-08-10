@@ -1,0 +1,27 @@
+# AetherForge AI Coding Rules
+
+## Architecture & Flow
+- You are working on "Wedge A" of AetherForge: A hardware-aware control plane for local AI agents.
+- All generation requests MUST pass through the `EconomicGatekeeper` and `hardware_watchdog` before hitting the engine.
+- The `MockAetherEngine` is the default and required path for all CI/CD and testing. 
+
+## Import & Dependency Strictness
+- NEVER import `pynvml`, `llama-cpp-python`, `torch`, or `ktransformers` at the global module level.
+- ALWAYS use the `create_engine` factory in `src/engines/__init__.py` to lazy-load heavy dependencies.
+- If a file requires NVML, wrap the import in a `try/except ImportError` block and fall back to `self.active = False` (Simulation Mode).
+
+## Logging Standards
+- NEVER use `print()` statements. 
+- ALWAYS import `from src.logger import get_logger`.
+- Use specific namespaces: `get_logger("api")` for routes, `get_logger("gatekeeper")` for ROI math, `get_logger("watchdog")` for thermals.
+
+## Testing & Chaos
+- When writing tests, ALWAYS use the Mock Engine (`AETHER_ENGINE=mock`).
+- If testing thermal locks or VRAM limits, use the `AETHER_CHAOS=true` environment variable to trigger simulated hardware events.
+- Do not write tests that require physical GPU hardware.
+
+## Error Handling
+- Thermal limit breaches MUST return HTTP 503.
+- Hardware queue limit breaches MUST return HTTP 503.
+- Context size limit breaches MUST return HTTP 413.
+- Unprofitable strategy swaps MUST return HTTP 200 with a `{"status": "rejected", "reason": "..."}` payload, not a 400/500 error.
