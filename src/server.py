@@ -268,7 +268,7 @@ async def update_strategy(payload: StrategyPayload, request: Request):
                 return {"status": "rejected", "reason": "Swap latency overhead exceeds raw throughput gains.", "active_mode": state.current_strategy}
             
             state.current_strategy = target_mode
-            result = state.hardware_engine.apply_strategy(state.current_strategy)
+            result = await asyncio.to_thread(state.hardware_engine.apply_strategy, state.current_strategy)
             
             if isinstance(result, dict):
                 success = result.get("success", False)
@@ -328,11 +328,12 @@ async def generate_text(payload: GenerationPayload, request: Request):
                 else:
                     active_mode = state.current_strategy
 
-            output = state.hardware_engine.generate(
-                prompt=payload.prompt, 
-                max_tokens=payload.max_tokens,
-                temperature=payload.temperature
-            )
+            output = await asyncio.to_thread(
+    state.hardware_engine.generate,
+    prompt=payload.prompt, 
+    max_tokens=payload.max_tokens,
+    temperature=payload.temperature
+)
     finally:
         state.queue_depth -= 1
 
