@@ -19,6 +19,9 @@ api_logger = get_logger("api")
 gatekeeper_logger = get_logger("gatekeeper")
 watchdog_logger = get_logger("watchdog")
 
+# Hardcoded failsafe to bypass Pydantic sync issues
+MAX_QUEUE_DEPTH = 5
+
 
 # --- 1. HARDENED STATE CONTAINER ---
 class HypervisorState:
@@ -34,6 +37,7 @@ class HypervisorState:
         self.is_simulated = True 
         self.lock = asyncio.Lock() 
         self.emergency_thermal_lock = False
+        self.queue_depth = 0  # Tracks requests waiting for the hardware
 
 
 class EconomicGatekeeper:
@@ -237,48 +241,56 @@ async def update_strategy(payload: StrategyPayload, request: Request):
     
     if state.emergency_thermal_lock:
         api_logger.warning("Strategy swap rejected: System is thermally locked.")
-        raise HTTPException(status_code=503, detail="SYSTEM LOCKED: GPU is currently cooling down.")
+        raise HTTPException(status_code=503, detail="SYSTEM LOCKED: GPU is currently cooling down.", headers={"Retry-After": "10"})
+
+    if state.queue_depth >= MAX_QUEUE_DEPTH:
+        api_logger.warning(f"Strategy swap rejected: Hardware queue full ({state.queue_depth}/{MAX_QUEUE_DEPTH}).")
+        raise HTTPException(status_code=503, detail="SYSTEM BUSY: Hardware request queue is full.", headers={"Retry-After": "2"})
 
     target_mode = payload.mode.lower()
     
-    async with state.lock:
-        context_size = payload.estimated_context_tokens
-        if payload.context_text:
-            context_size = state.hardware_engine.count_tokens(payload.context_text)
-        
-        is_profitable = state.gatekeeper.evaluate_swap(
-            current_mode=state.current_strategy,
-            target_mode=target_mode,
-            context_tokens=context_size,
-            expected_output=payload.expected_output_tokens
-        )
-        
-        if not is_profitable:
-            gatekeeper_logger.info(f"Swap Rejected: {state.current_strategy} -> {target_mode} (Unprofitable ROI)")
-            return {"status": "rejected", "reason": "Swap latency overhead exceeds raw throughput gains.", "active_mode": state.current_strategy}
-        
-        state.current_strategy = target_mode
-        result = state.hardware_engine.apply_strategy(state.current_strategy)
-        
-        if isinstance(result, dict):
-            success = result.get("success", False)
-            swap_metrics = result.get("metrics", {})
-        else:
-            success = result
-            swap_metrics = {}
+    state.queue_depth += 1
+    try:
+        async with state.lock:
+            context_size = payload.estimated_context_tokens
+            if payload.context_text:
+                context_size = state.hardware_engine.count_tokens(payload.context_text)
             
-        if not success:
-            api_logger.error(f"Strategy swap to {target_mode} failed at the hardware layer.")
-            raise HTTPException(status_code=500, detail="Failed to apply hardware strategy.")
+            is_profitable = state.gatekeeper.evaluate_swap(
+                current_mode=state.current_strategy,
+                target_mode=target_mode,
+                context_tokens=context_size,
+                expected_output=payload.expected_output_tokens
+            )
             
-        io_total = swap_metrics.get("extract_seconds", 0.0) + swap_metrics.get("inject_seconds", 0.0)
-        reload_total = swap_metrics.get("reload_seconds", 0.0)
-        
-        if io_total > 0 or reload_total > 0:
-            state.gatekeeper.update_hardware_latencies(physical_swap_seconds=reload_total, io_seconds=io_total)
+            if not is_profitable:
+                gatekeeper_logger.info(f"Swap Rejected: {state.current_strategy} -> {target_mode} (Unprofitable ROI)")
+                return {"status": "rejected", "reason": "Swap latency overhead exceeds raw throughput gains.", "active_mode": state.current_strategy}
             
-        gatekeeper_logger.info(f"Swap Executed: Active strategy is now {state.current_strategy} (Reload: {reload_total:.2f}s, IO: {io_total:.2f}s)")
-        return {"status": "strategy_applied", "active_mode": state.current_strategy}
+            state.current_strategy = target_mode
+            result = state.hardware_engine.apply_strategy(state.current_strategy)
+            
+            if isinstance(result, dict):
+                success = result.get("success", False)
+                swap_metrics = result.get("metrics", {})
+            else:
+                success = result
+                swap_metrics = {}
+                
+            if not success:
+                api_logger.error(f"Strategy swap to {target_mode} failed at the hardware layer.")
+                raise HTTPException(status_code=500, detail="Failed to apply hardware strategy.")
+                
+            io_total = swap_metrics.get("extract_seconds", 0.0) + swap_metrics.get("inject_seconds", 0.0)
+            reload_total = swap_metrics.get("reload_seconds", 0.0)
+            
+            if io_total > 0 or reload_total > 0:
+                state.gatekeeper.update_hardware_latencies(physical_swap_seconds=reload_total, io_seconds=io_total)
+                
+            gatekeeper_logger.info(f"Swap Executed: Active strategy is now {state.current_strategy} (Reload: {reload_total:.2f}s, IO: {io_total:.2f}s)")
+            return {"status": "strategy_applied", "active_mode": state.current_strategy}
+    finally:
+        state.queue_depth -= 1
 
 @app.post("/generate")
 async def generate_text(payload: GenerationPayload, request: Request):
@@ -286,7 +298,11 @@ async def generate_text(payload: GenerationPayload, request: Request):
     
     if state.emergency_thermal_lock:
         api_logger.warning("Generation rejected: System is thermally locked.")
-        raise HTTPException(status_code=503, detail="SYSTEM LOCKED: GPU is currently cooling down.")
+        raise HTTPException(status_code=503, detail="SYSTEM LOCKED: GPU is currently cooling down.", headers={"Retry-After": "10"})
+
+    if state.queue_depth >= MAX_QUEUE_DEPTH:
+        api_logger.warning(f"Generation rejected: Hardware queue full ({state.queue_depth}/{MAX_QUEUE_DEPTH}).")
+        raise HTTPException(status_code=503, detail="SYSTEM BUSY: Hardware request queue is full.", headers={"Retry-After": "2"})
 
     exact_prompt_tokens = state.hardware_engine.count_tokens(payload.prompt)
     if exact_prompt_tokens > settings.max_safe_context_tokens:
@@ -295,27 +311,30 @@ async def generate_text(payload: GenerationPayload, request: Request):
 
     active_mode = payload.strategy.mode if payload.strategy else state.current_strategy
 
-    async with state.lock:
-        if state.hardware_engine.current_strategy != active_mode:
-            is_profitable = state.gatekeeper.evaluate_swap(
-                current_mode=state.current_strategy,
-                target_mode=active_mode,
-                context_tokens=exact_prompt_tokens,
-                expected_output=payload.max_tokens
-            )
-            if is_profitable:
-                gatekeeper_logger.info(f"Pre-generation Swap Executed: {state.current_strategy} -> {active_mode}")
-                state.hardware_engine.apply_strategy(active_mode)
-                state.current_strategy = active_mode
-            else:
-                active_mode = state.current_strategy
+    state.queue_depth += 1
+    try:
+        async with state.lock:
+            if state.hardware_engine.current_strategy != active_mode:
+                is_profitable = state.gatekeeper.evaluate_swap(
+                    current_mode=state.current_strategy,
+                    target_mode=active_mode,
+                    context_tokens=exact_prompt_tokens,
+                    expected_output=payload.max_tokens
+                )
+                if is_profitable:
+                    gatekeeper_logger.info(f"Pre-generation Swap Executed: {state.current_strategy} -> {active_mode}")
+                    state.hardware_engine.apply_strategy(active_mode)
+                    state.current_strategy = active_mode
+                else:
+                    active_mode = state.current_strategy
 
-        # Execute generation passing temperature through to engine contract
-        output = state.hardware_engine.generate(
-            prompt=payload.prompt, 
-            max_tokens=payload.max_tokens,
-            temperature=payload.temperature
-        )
+            output = state.hardware_engine.generate(
+                prompt=payload.prompt, 
+                max_tokens=payload.max_tokens,
+                temperature=payload.temperature
+            )
+    finally:
+        state.queue_depth -= 1
 
     measured_tps = output["metrics"].get("tokens_per_second", 0)
     if measured_tps > 0:
