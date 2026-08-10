@@ -53,3 +53,4 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+BENCHMARKS.md
