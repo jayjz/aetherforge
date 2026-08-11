@@ -19,9 +19,6 @@ api_logger = get_logger("api")
 gatekeeper_logger = get_logger("gatekeeper")
 watchdog_logger = get_logger("watchdog")
 
-# Hardcoded failsafe to bypass Pydantic sync issues
-MAX_QUEUE_DEPTH = 5
-
 
 # --- 1. HARDENED STATE CONTAINER ---
 class HypervisorState:
@@ -35,9 +32,10 @@ class HypervisorState:
         self.hardware_engine = None
         self.current_strategy = "balanced"
         self.is_simulated = True 
-        self.lock = asyncio.Lock() 
+        
+        # Atomic concurrency control wired directly to configuration
+        self.semaphore = asyncio.Semaphore(settings.max_queue_depth)
         self.emergency_thermal_lock = False
-        self.queue_depth = 0  # Tracks requests waiting for the hardware
 
 
 class EconomicGatekeeper:
@@ -124,7 +122,6 @@ async def lifespan(app: FastAPI):
     if os.path.exists(topo_path):
         state.cache_manager.load_topology(topo_path)
 
-    # Respect explicit engine configuration
     if settings.aether_engine.lower() != "auto":
         target_engine = settings.aether_engine.lower()
         api_logger.info(f"Engine explicitly forced to: {target_engine.upper()}")
@@ -172,22 +169,6 @@ class GenerationPayload(BaseModel):
 
 # --- 4. HARDENED ROUTES ---
 
-@app.get("/system/cache")
-async def get_cache_status(request: Request):
-    """Exposes current virtual tensor layout and budget."""
-    state = request.app.state.hypervisor
-    vram_experts = [e.expert_id for e in state.cache_manager.experts.values() if e.location == "VRAM"]
-    
-    return {
-        "status": "simulation" if state.is_simulated else "online",
-        "current_step": state.cache_manager.current_step,
-        "vram_budget_mb": state.cache_manager.vram_budget_mb,
-        "current_vram_usage_mb": state.cache_manager.current_vram_usage,
-        "active_experts_in_vram": vram_experts,
-        "active_strategy": state.hardware_engine.current_strategy if state.hardware_engine else "none",
-        "engine_available": not state.is_simulated
-    }
-
 @app.get("/system/metrics")
 async def get_metrics(request: Request):
     state = request.app.state.hypervisor
@@ -211,13 +192,8 @@ async def get_metrics(request: Request):
 
 @app.get("/system/tools")
 async def get_tool_schema():
-    """
-    Dynamically generates an OpenAI-compatible function calling schema 
-    directly from the Pydantic StrategyPayload. Agents use this to discover commands.
-    """
     base_schema = StrategyPayload.model_json_schema()
     properties = base_schema.get("properties", {})
-    
     for prop in properties.values():
         prop.pop("title", None)
         prop.pop("default", None)
@@ -243,54 +219,57 @@ async def update_strategy(payload: StrategyPayload, request: Request):
         api_logger.warning("Strategy swap rejected: System is thermally locked.")
         raise HTTPException(status_code=503, detail="SYSTEM LOCKED: GPU is currently cooling down.", headers={"Retry-After": "10"})
 
-    if state.queue_depth >= MAX_QUEUE_DEPTH:
-        api_logger.warning(f"Strategy swap rejected: Hardware queue full ({state.queue_depth}/{MAX_QUEUE_DEPTH}).")
+    # Fail-fast admission control
+    if state.semaphore.locked():
+        api_logger.warning(f"Strategy swap rejected: Hardware queue full (Limit: {settings.max_queue_depth}).")
         raise HTTPException(status_code=503, detail="SYSTEM BUSY: Hardware request queue is full.", headers={"Retry-After": "2"})
 
-    target_mode = payload.mode.lower()
-    
-    state.queue_depth += 1
+    await state.semaphore.acquire()
     try:
-        async with state.lock:
-            context_size = payload.estimated_context_tokens
-            if payload.context_text:
-                context_size = state.hardware_engine.count_tokens(payload.context_text)
+        target_mode = payload.mode.lower()
+        context_size = payload.estimated_context_tokens
+        if payload.context_text:
+            context_size = state.hardware_engine.count_tokens(payload.context_text)
+        
+        is_profitable = state.gatekeeper.evaluate_swap(
+            current_mode=state.current_strategy,
+            target_mode=target_mode,
+            context_tokens=context_size,
+            expected_output=payload.expected_output_tokens
+        )
+        
+        if not is_profitable:
+            gatekeeper_logger.info(f"Swap Rejected: {state.current_strategy} -> {target_mode} (Unprofitable ROI)")
+            return {"status": "rejected", "reason": "Swap latency overhead exceeds raw throughput gains.", "active_mode": state.current_strategy}
+        
+        # Execute off the event loop
+        result = await asyncio.to_thread(state.hardware_engine.apply_strategy, target_mode)
+        
+        if isinstance(result, dict):
+            success = result.get("success", False)
+            swap_metrics = result.get("metrics", {})
+        else:
+            success = result
+            swap_metrics = {}
             
-            is_profitable = state.gatekeeper.evaluate_swap(
-                current_mode=state.current_strategy,
-                target_mode=target_mode,
-                context_tokens=context_size,
-                expected_output=payload.expected_output_tokens
-            )
+        # Strict success check BEFORE state mutation
+        if not success:
+            api_logger.error(f"Strategy swap to {target_mode} failed at the hardware layer.")
+            raise HTTPException(status_code=500, detail="Failed to apply hardware strategy.")
+        
+        state.current_strategy = target_mode
+        
+        io_total = swap_metrics.get("extract_seconds", 0.0) + swap_metrics.get("inject_seconds", 0.0)
+        reload_total = swap_metrics.get("reload_seconds", 0.0)
+        
+        if io_total > 0 or reload_total > 0:
+            state.gatekeeper.update_hardware_latencies(physical_swap_seconds=reload_total, io_seconds=io_total)
             
-            if not is_profitable:
-                gatekeeper_logger.info(f"Swap Rejected: {state.current_strategy} -> {target_mode} (Unprofitable ROI)")
-                return {"status": "rejected", "reason": "Swap latency overhead exceeds raw throughput gains.", "active_mode": state.current_strategy}
-            
-            state.current_strategy = target_mode
-            result = await asyncio.to_thread(state.hardware_engine.apply_strategy, state.current_strategy)
-            
-            if isinstance(result, dict):
-                success = result.get("success", False)
-                swap_metrics = result.get("metrics", {})
-            else:
-                success = result
-                swap_metrics = {}
-                
-            if not success:
-                api_logger.error(f"Strategy swap to {target_mode} failed at the hardware layer.")
-                raise HTTPException(status_code=500, detail="Failed to apply hardware strategy.")
-                
-            io_total = swap_metrics.get("extract_seconds", 0.0) + swap_metrics.get("inject_seconds", 0.0)
-            reload_total = swap_metrics.get("reload_seconds", 0.0)
-            
-            if io_total > 0 or reload_total > 0:
-                state.gatekeeper.update_hardware_latencies(physical_swap_seconds=reload_total, io_seconds=io_total)
-                
-            gatekeeper_logger.info(f"Swap Executed: Active strategy is now {state.current_strategy} (Reload: {reload_total:.2f}s, IO: {io_total:.2f}s)")
-            return {"status": "strategy_applied", "active_mode": state.current_strategy}
+        gatekeeper_logger.info(f"Swap Executed: Active strategy is now {state.current_strategy} (Reload: {reload_total:.2f}s, IO: {io_total:.2f}s)")
+        return {"status": "strategy_applied", "active_mode": state.current_strategy}
+
     finally:
-        state.queue_depth -= 1
+        state.semaphore.release()
 
 @app.post("/generate")
 async def generate_text(payload: GenerationPayload, request: Request):
@@ -300,51 +279,61 @@ async def generate_text(payload: GenerationPayload, request: Request):
         api_logger.warning("Generation rejected: System is thermally locked.")
         raise HTTPException(status_code=503, detail="SYSTEM LOCKED: GPU is currently cooling down.", headers={"Retry-After": "10"})
 
-    if state.queue_depth >= MAX_QUEUE_DEPTH:
-        api_logger.warning(f"Generation rejected: Hardware queue full ({state.queue_depth}/{MAX_QUEUE_DEPTH}).")
-        raise HTTPException(status_code=503, detail="SYSTEM BUSY: Hardware request queue is full.", headers={"Retry-After": "2"})
-
     exact_prompt_tokens = state.hardware_engine.count_tokens(payload.prompt)
     if exact_prompt_tokens > settings.max_safe_context_tokens:
         api_logger.warning(f"Generation rejected: Context ({exact_prompt_tokens}) exceeds safety limit ({settings.max_safe_context_tokens}).")
-        raise HTTPException(status_code=413, detail=f"Context payload size violates the active hardware safety ceiling.")
+        raise HTTPException(status_code=413, detail="Context payload size violates the active hardware safety ceiling.")
 
-    active_mode = payload.strategy.mode if payload.strategy else state.current_strategy
+    # Fail-fast admission control
+    if state.semaphore.locked():
+        api_logger.warning(f"Generation rejected: Hardware queue full (Limit: {settings.max_queue_depth}).")
+        raise HTTPException(status_code=503, detail="SYSTEM BUSY: Hardware request queue is full.", headers={"Retry-After": "2"})
 
-    state.queue_depth += 1
+    await state.semaphore.acquire()
     try:
-        async with state.lock:
-            if state.hardware_engine.current_strategy != active_mode:
-                is_profitable = state.gatekeeper.evaluate_swap(
-                    current_mode=state.current_strategy,
-                    target_mode=active_mode,
-                    context_tokens=exact_prompt_tokens,
-                    expected_output=payload.max_tokens
-                )
-                if is_profitable:
-                    gatekeeper_logger.info(f"Pre-generation Swap Executed: {state.current_strategy} -> {active_mode}")
-                    state.hardware_engine.apply_strategy(active_mode)
+        active_mode = payload.strategy.mode if payload.strategy else state.current_strategy
+
+        if state.hardware_engine.current_strategy != active_mode:
+            is_profitable = state.gatekeeper.evaluate_swap(
+                current_mode=state.current_strategy,
+                target_mode=active_mode,
+                context_tokens=exact_prompt_tokens,
+                expected_output=payload.max_tokens
+            )
+            if is_profitable:
+                gatekeeper_logger.info(f"Pre-generation Swap Attempt: {state.current_strategy} -> {active_mode}")
+                swap_result = await asyncio.to_thread(state.hardware_engine.apply_strategy, active_mode)
+                
+                swap_success = swap_result.get("success", False) if isinstance(swap_result, dict) else swap_result
+                
+                if swap_success:
                     state.current_strategy = active_mode
+                    gatekeeper_logger.info(f"Pre-generation Swap Executed: Active strategy is now {active_mode}")
                 else:
-                    active_mode = state.current_strategy
+                    api_logger.error(f"Pre-generation Swap to {active_mode} failed. Engine remains in {state.current_strategy}.")
+                    active_mode = state.current_strategy  # Revert to reality
+            else:
+                active_mode = state.current_strategy
 
-            output = await asyncio.to_thread(
-    state.hardware_engine.generate,
-    prompt=payload.prompt, 
-    max_tokens=payload.max_tokens,
-    temperature=payload.temperature
-)
+        # Execute off the event loop. Exceptions here bypass metrics update and jump straight to finally block.
+        output = await asyncio.to_thread(
+            state.hardware_engine.generate,
+            prompt=payload.prompt, 
+            max_tokens=payload.max_tokens,
+            temperature=payload.temperature
+        )
+
+        measured_tps = output.get("metrics", {}).get("tokens_per_second", 0)
+        if measured_tps > 0:
+            state.gatekeeper.update_profile(active_mode, measured_tps)
+            
+        api_logger.info(f"Generation complete: {exact_prompt_tokens} ctx -> {output.get('metrics', {}).get('tokens_generated', 0)} tokens @ {measured_tps:.2f} TPS ({active_mode})")
+
+        return {
+            "text": output.get("text", ""),
+            "metrics": output.get("metrics", {}),
+            "hardware_engaged": not state.is_simulated
+        }
+
     finally:
-        state.queue_depth -= 1
-
-    measured_tps = output["metrics"].get("tokens_per_second", 0)
-    if measured_tps > 0:
-        state.gatekeeper.update_profile(active_mode, measured_tps)
-        
-    api_logger.info(f"Generation complete: {exact_prompt_tokens} ctx -> {output['metrics'].get('tokens_generated', 0)} tokens @ {measured_tps:.2f} TPS ({active_mode})")
-
-    return {
-        "text": output["text"],
-        "metrics": output["metrics"],
-        "hardware_engaged": not state.is_simulated
-    }
+        state.semaphore.release()
