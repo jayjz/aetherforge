@@ -1,37 +1,16 @@
-﻿# config.yaml — RTX 4060 8GB + 32GB RAM
-# Safe defaults for control-plane / Mock testing.
-# Do NOT set engine to llama until Fast-Swap is proven.
-
-model:
-  path: "models/DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf"
-  # Cap context hard. 8192 + partial offload on 8GB is optimistic once you leave Mock.
-  n_ctx: 4096
-
-strategies:
-  # n_gpu_layers only matter when engine=llama. Kept conservative for 8GB + KV headroom.
-  # Q4_K_M weights alone are ~10.4GB; full model never fits in 8GB.
-  high_fidelity:
-    gpu_layers: 12
-    tps_estimate: 18.0
-  balanced:
-    gpu_layers: 8
-    tps_estimate: 12.0
-  aggressive_quant:
-    gpu_layers: 2
-    tps_estimate: 10.0
-
-gatekeeper:
-  # Measured reload on 4060 was claimed ~5–8s; keep conservative until re-measured.
-  swap_penalty_seconds: 6.0
-  telemetry_alpha: 0.3
-  # Software trip before VBIOS throttle / paste abuse. Do not raise above 75 for your rule set.
-  max_gpu_temp_c: 75
-  # Leave ~15% VRAM headroom for KV + fragmentation.
-  max_vram_pct: 80
-  max_safe_context_tokens: 4096
-
-server:
-  host: "127.0.0.1"
-  port: 8000
-  # Hard lock for this phase. Env AETHER_ENGINE=mock should still be set.
-  engine: mock
+﻿max_gpu_temp_c: 75
+max_vram_allocation_pct: 90.0
+vram_budget_mb: 6000
+ram_budget_mb: 16000
+swap_penalty_seconds: 1.5
+state_io_base_seconds: 0.5
+telemetry_alpha: 0.2
+tps_high_fidelity: 25.0
+tps_balanced: 15.0
+tps_aggressive_quant: 8.0
+tps_min_clamp: 1.0
+tps_max_clamp: 100.0
+max_safe_context_tokens: 4096
+state_io_per_token_seconds: 0.0001
+model_path: ""
+n_ctx: 2048
