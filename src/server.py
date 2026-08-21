@@ -9,12 +9,14 @@ from typing import List, Optional, Dict, Any
 from src.config import settings
 from src.engines import create_engine
 from src.hardware_monitor import HardwareMonitor
-from src.logger import setup_logging, get_logger
+
+from src.logger import setup_logging, get_logger, get_audit_logger
 
 setup_logging()
 api_logger = get_logger("api")
 gatekeeper_logger = get_logger("gatekeeper")
 watchdog_logger = get_logger("watchdog")
+audit_logger = get_audit_logger() # <-- NEW
 
 # --- 1. HARDENED STATE CONTAINER ---
 class HypervisorState:
@@ -189,6 +191,20 @@ async def update_strategy(payload: StrategyPayload, request: Request):
         context_size = state.hardware_engine.count_tokens(payload.context_text) if payload.context_text else payload.estimated_context_tokens
         
         if not state.gatekeeper.evaluate_swap(state.current_strategy, target_mode, context_size, payload.expected_output_tokens):
+            gatekeeper_logger.info(f"Swap Rejected: {state.current_strategy} -> {target_mode} (Unprofitable ROI)")
+            
+            # --- NEW: Emit structured JSON audit ---
+            audit_logger.info("Gatekeeper Intervention: Strategy Swap Rejected", extra={
+                "details": {
+                    "current_mode": state.current_strategy,
+                    "target_mode": target_mode,
+                    "context_tokens": context_size,
+                    "expected_output": payload.expected_output_tokens,
+                    "reason": "roi_negative"
+                }
+            })
+            # ---------------------------------------
+            
             return {"status": "rejected", "error": "roi_negative", "active_mode": state.current_strategy}
         
         result = await asyncio.to_thread(state.hardware_engine.apply_strategy, target_mode)
