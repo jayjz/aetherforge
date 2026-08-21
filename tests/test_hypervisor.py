@@ -49,18 +49,7 @@ def test_gatekeeper_swap_matrix(client):
     response = client.post("/system/strategy", json=unprofitable_payload)
     assert response.status_code == 200
     assert response.json()["status"] == "rejected"
-
-def test_thermal_circuit_breaker_enforcement(client):
-    app.state.hypervisor.emergency_thermal_lock = True
-    try:
-        gen_response = client.post("/generate", json={"prompt": "test", "max_tokens": 10})
-        assert gen_response.status_code == 503
-        assert "SYSTEM LOCKED" in gen_response.json()["detail"]
-
-        strat_response = client.post("/system/strategy", json={"mode": "high_fidelity", "expected_output_tokens": 100})
-        assert strat_response.status_code == 503
-    finally:
-        app.state.hypervisor.emergency_thermal_lock = False
+    assert response.json()["error"] == "roi_negative"
 
 def test_failed_swap_retains_state(client):
     """Proves that a hardware-level swap failure does not mutate the API's view of the current strategy."""
@@ -72,7 +61,8 @@ def test_failed_swap_retains_state(client):
     state.hardware_engine.apply_strategy = lambda mode: {"success": False, "metrics": {}}
 
     try:
-        payload = {"mode": "aggressive_quant", "estimated_context_tokens": 0, "expected_output_tokens": 5000}
+        # Requesting high_fidelity for 5000 tokens guarantees a profitable ROI approval from the Gatekeeper
+        payload = {"mode": "high_fidelity", "estimated_context_tokens": 0, "expected_output_tokens": 5000}
         response = client.post("/system/strategy", json=payload)
         
         assert response.status_code == 500
@@ -80,6 +70,19 @@ def test_failed_swap_retains_state(client):
     finally:
         # Restore mock engine
         state.hardware_engine.apply_strategy = original_apply
+
+def test_thermal_circuit_breaker_enforcement(client):
+    app.state.hypervisor.emergency_thermal_lock = True
+    try:
+        gen_response = client.post("/generate", json={"prompt": "test", "max_tokens": 10})
+        assert gen_response.status_code == 503
+        assert gen_response.json()["detail"]["error"] == "thermal_lock_active"
+
+        strat_response = client.post("/system/strategy", json={"mode": "high_fidelity", "expected_output_tokens": 100})
+        assert strat_response.status_code == 503
+        assert strat_response.json()["detail"]["error"] == "thermal_lock_active"
+    finally:
+        app.state.hypervisor.emergency_thermal_lock = False
 
 def test_queue_ceiling_enforcement(client):
     """Proves the Semaphore cleanly rejects traffic with 503 when the queue is saturated."""
@@ -93,13 +96,13 @@ def test_queue_ceiling_enforcement(client):
     asyncio.run(drain_semaphore())
 
     try:
-        gen_response = client.post("/generate", json={"prompt": "test"})
+        gen_response = client.post("/generate", json={"prompt": "test", "max_tokens": 10})
         assert gen_response.status_code == 503
-        assert "SYSTEM BUSY" in gen_response.json()["detail"]
+        assert gen_response.json()["detail"]["error"] == "queue_saturated"
         
-        strat_response = client.post("/system/strategy", json={"mode": "high_fidelity"})
+        strat_response = client.post("/system/strategy", json={"mode": "high_fidelity", "expected_output_tokens": 100})
         assert strat_response.status_code == 503
-        assert "SYSTEM BUSY" in strat_response.json()["detail"]
+        assert strat_response.json()["detail"]["error"] == "queue_saturated"
     finally:
         # Release the locks for subsequent tests
         for _ in range(app.state.hypervisor.semaphore._value):
