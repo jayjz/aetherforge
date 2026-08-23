@@ -16,7 +16,7 @@ setup_logging()
 api_logger = get_logger("api")
 gatekeeper_logger = get_logger("gatekeeper")
 watchdog_logger = get_logger("watchdog")
-audit_logger = get_audit_logger() # <-- NEW
+audit_logger = get_audit_logger()
 
 # --- 1. HARDENED STATE CONTAINER ---
 class HypervisorState:
@@ -30,6 +30,9 @@ class HypervisorState:
         # Atomic concurrency control wired directly to configuration
         self.semaphore = asyncio.Semaphore(settings.max_queue_depth)
         self.emergency_thermal_lock = False
+        
+        # NEW: Thrash Prevention Lease
+        self.strategy_lease_expiry = 0.0
 
 class EconomicGatekeeper:
     def __init__(self):
@@ -127,7 +130,7 @@ async def lifespan(app: FastAPI):
     watchdog_task.cancel()
     state.hardware_monitor.shutdown()
 
-app = FastAPI(title="AetherForge Hypervisor API", version="0.7.0", lifespan=lifespan)
+app = FastAPI(title="AetherForge Hypervisor API", version="0.7.1", lifespan=lifespan)
 
 # --- PYDANTIC SCHEMAS ---
 class StrategyPayload(BaseModel):
@@ -175,6 +178,12 @@ async def get_tool_schema():
 async def update_strategy(payload: StrategyPayload, request: Request):
     state = request.app.state.hypervisor
     
+    # NEW: Prevent swarm thrashing
+    if time.time() < state.strategy_lease_expiry:
+        raise HTTPException(status_code=429, headers={"Retry-After": "5"}, detail={
+            "error": "strategy_locked", "reason": "Another agent holds an active strategy lease."
+        })
+    
     if state.emergency_thermal_lock:
         raise HTTPException(status_code=503, headers={"Retry-After": "10"}, detail={
             "error": "thermal_lock_active", "temp_c": state.hardware_monitor.get_vitals().get("temp_c", 0), "retry_after_seconds": 10
@@ -193,7 +202,6 @@ async def update_strategy(payload: StrategyPayload, request: Request):
         if not state.gatekeeper.evaluate_swap(state.current_strategy, target_mode, context_size, payload.expected_output_tokens):
             gatekeeper_logger.info(f"Swap Rejected: {state.current_strategy} -> {target_mode} (Unprofitable ROI)")
             
-            # --- NEW: Emit structured JSON audit ---
             audit_logger.info("Gatekeeper Intervention: Strategy Swap Rejected", extra={
                 "details": {
                     "current_mode": state.current_strategy,
@@ -203,7 +211,6 @@ async def update_strategy(payload: StrategyPayload, request: Request):
                     "reason": "roi_negative"
                 }
             })
-            # ---------------------------------------
             
             return {"status": "rejected", "error": "roi_negative", "active_mode": state.current_strategy}
         
@@ -227,6 +234,13 @@ async def generate_text(payload: GenerationPayload, request: Request):
             "error": "thermal_lock_active", "temp_c": state.hardware_monitor.get_vitals().get("temp_c", 0), "retry_after_seconds": 10
         })
 
+    # NEW: Cheap pre-flight heuristic (assume ~4 chars per token) to prevent tokenizer DoS
+    max_safe_chars = settings.max_safe_context_tokens * 4
+    if len(payload.prompt) > max_safe_chars:
+        raise HTTPException(status_code=413, detail={
+            "error": "context_exceeded", "max_allowed": settings.max_safe_context_tokens, "attempted": len(payload.prompt) // 4, "action": "truncate_and_retry"
+        })
+
     exact_prompt_tokens = state.hardware_engine.count_tokens(payload.prompt)
     if exact_prompt_tokens > settings.max_safe_context_tokens:
         raise HTTPException(status_code=413, detail={
@@ -248,6 +262,10 @@ async def generate_text(payload: GenerationPayload, request: Request):
                     state.current_strategy = active_mode
             else:
                 active_mode = state.current_strategy
+
+        # NEW: Lock the lease for the estimated generation time
+        estimated_tps = max(state.gatekeeper.profiles[active_mode]["live_tps"], 1.0)
+        state.strategy_lease_expiry = time.time() + (payload.max_tokens / estimated_tps)
 
         output = await asyncio.to_thread(state.hardware_engine.generate, prompt=payload.prompt, max_tokens=payload.max_tokens, temperature=payload.temperature)
         measured_tps = output.get("metrics", {}).get("tokens_per_second", 0)

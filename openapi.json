@@ -2,26 +2,9 @@
   "openapi": "3.1.0",
   "info": {
     "title": "AetherForge Hypervisor API",
-    "version": "0.6.0"
+    "version": "0.7.1"
   },
   "paths": {
-    "/system/cache": {
-      "get": {
-        "summary": "Get Cache Status",
-        "description": "Exposes current virtual tensor layout and budget.",
-        "operationId": "get_cache_status_system_cache_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
-    },
     "/system/metrics": {
       "get": {
         "summary": "Get Metrics",
@@ -41,7 +24,6 @@
     "/system/tools": {
       "get": {
         "summary": "Get Tool Schema",
-        "description": "Dynamically generates an OpenAI-compatible function calling schema \ndirectly from the Pydantic StrategyPayload. Agents use this to discover commands.",
         "operationId": "get_tool_schema_system_tools_get",
         "responses": {
           "200": {
@@ -155,11 +137,6 @@
                 "type": "null"
               }
             ]
-          },
-          "simulate": {
-            "type": "boolean",
-            "title": "Simulate",
-            "default": false
           }
         },
         "type": "object",
@@ -187,21 +164,6 @@
             "type": "string",
             "title": "Mode",
             "description": "The VRAM strategy: 'high_fidelity', 'balanced', or 'aggressive_quant'."
-          },
-          "priority_layers": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "integer"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Priority Layers",
-            "default": []
           },
           "estimated_context_tokens": {
             "anyOf": [
