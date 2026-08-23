@@ -1,31 +1,22 @@
-# Dockerfile - Optimized for RTX 4060 + CUDA Toolkit Parity
-FROM nvidia/cuda:12.4.1-devel-ubuntu22.04   
-# Prevent interactive prompts blocking the build process
-ENV DEBIAN_FRONTEND=noninteractive
+# Use the official lightweight Python 3.12 image
+FROM python:3.12-slim
 
-RUN apt-get update && apt-get install -y \
-    python3.10 \
-    python3-pip \
-    git \
-    build-essential \
-    cmake \
-    && rm -rf /var/lib/apt/lists/*
-
+# Set working directory
 WORKDIR /app
 
-# Explicitly prepare build environments for wheels
-RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
+# Prevent Python from writing .pyc files and enable unbuffered logging
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-COPY requirements.txt /app/requirements.txt
-RUN pip3 install --no-cache-dir -r requirements.txt
+# Install dependencies first (leverage Docker layer caching)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# --- CRITICAL CUDA COMPILATION CORRECTION ---
-# Replaces obsolete LLAMA_CUBLAS flags with modern unified CUDA backends
-ENV GGML_CUDA=on
-RUN CMAKE_ARGS="-DGGML_CUDA=on" pip3 install llama-cpp-python --force-reinstall --no-cache-dir
+# Copy the rest of the application
+COPY . .
 
-COPY . /app
+# Create the logs directory with wide permissions so both containers can write/read
+RUN mkdir -p /app/logs && chmod 777 /app/logs
 
-EXPOSE 8000
-
+# The default command (can be overridden by docker-compose)
 CMD ["uvicorn", "src.server:app", "--host", "0.0.0.0", "--port", "8000"]

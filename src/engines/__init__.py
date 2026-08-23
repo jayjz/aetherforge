@@ -1,13 +1,14 @@
-"""
-AetherForge Engine Factory
-==========================
-Lazy-loads hardware engines to ensure the Mock control plane 
-can boot on systems lacking CUDA or C++ bindings.
-"""
+import os
+from .base import BaseAetherEngine
+from .mock_engine import MockAetherEngine
+from .kt_engine import KTransformersEngine
+from .llama_engine import LlamaEngine 
 
-def create_engine(engine_type: str, model_path: str, vram_budget_mb: float, n_ctx: int):
-    engine_type = engine_type.lower()
-    
+def create_engine(engine_type: str, model_path: str, vram_budget_mb: int, n_ctx: int) -> BaseAetherEngine:
+    """
+    Factory routes to the correct hardware backend.
+    Includes defensive fallbacks to protect the control plane.
+    """
     if engine_type == "mock":
         from .mock_engine import MockAetherEngine
         return MockAetherEngine(model_path, vram_budget_mb, n_ctx)

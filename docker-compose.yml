@@ -1,21 +1,29 @@
-# docker-compose.yml
-version: "3.8"
-
 services:
-  aetherforge:
+  control-plane:
     build: .
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-    volumes:
-      - ./models:/app/models          # Structural mount for targeted GGUF models
-      - ./config.yaml:/app/config.yaml # Injects local configuration file at runtime
+    container_name: aether-api
     ports:
       - "8000:8000"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    environment:
+      - AETHER_ENGINE=mock
+      - AETHER_CHAOS=false
+    volumes:
+      - aether_logs:/app/logs
+    command: uvicorn src.server:app --host 0.0.0.0 --port 8000
+
+  operator-lens:
+    build: .
+    container_name: aether-dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      # Use the internal Docker DNS name "control-plane" to reach the API
+      - AETHER_API_BASE=http://control-plane:8000
+    volumes:
+      - aether_logs:/app/logs
+    command: streamlit run scripts/dashboard.py --server.port 8501 --server.address 0.0.0.0
+    depends_on:
+      - control-plane
+
+volumes:
+  aether_logs:
